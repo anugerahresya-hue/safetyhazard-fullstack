@@ -23,21 +23,14 @@ AREA_PPE_REQUIREMENTS = {
     "assembly": {
         "display_name": "Assembly Area",
         "required_ppe": [],
-        "optional_ppe": ["safety_helmet", "safety_boots"],
+        "optional_ppe": [],
         "description": "Area assembly - perhatikan jalur trolley dan pedestrian",
         "special_rules": ["trolley_lane_violation", "person_lane_violation"]
-    },
-    "general": {
-        "display_name": "General/All Areas",
-        "required_ppe": [],
-        "optional_ppe": ["safety_helmet", "safety_boots", "safety_glasses", "safety_gloves"],
-        "description": "Area umum - dilarang main HP sambil jalan",
-        "special_rules": ["phone_usage"]
     },
 }
 
 # Default jika area tidak dipilih atau tidak valid
-DEFAULT_AREA = "general"
+DEFAULT_AREA = "spray_decoration"
 
 
 def get_area_config(area_key: str) -> dict:
@@ -107,9 +100,17 @@ def check_special_hazards(detections: list, area_key: str) -> list:
     """
     Periksa special hazards untuk area tertentu (phone usage, lane violations).
     
+    UNIVERSAL HAZARDS (berlaku di SEMUA area, tidak peduli area_key):
+    - phone_usage_while_walking: Deteksi phone DAN person dalam frame yang sama.
+      Asumsi: kalau ada phone + person = orang jalan sambil main HP (hazard).
+    
+    AREA-SPECIFIC HAZARDS:
+    - trolley_lane_violation: Assembly Area (TODO: spatial checking)
+    - person_lane_violation: Assembly Area (TODO: spatial checking)
+    
     Args:
         detections: List deteksi mentah dari YOLO
-        area_key: Key area
+        area_key: Key area (untuk special rules area-specific)
     
     Returns:
         List of special hazards yang ditemukan
@@ -119,26 +120,31 @@ def check_special_hazards(detections: list, area_key: str) -> list:
     
     detected_labels = {d.get("label", "").lower() for d in detections}
     
-    # Rule 1: Phone usage (berlaku di area "general" dan bisa ditambah ke area lain)
-    if "phone_usage" in special_rules:
-        if "phone" in detected_labels and "person" in detected_labels:
-            phone_det = next((d for d in detections if d.get("label", "").lower() == "phone"), None)
-            if phone_det:
-                hazards.append({
-                    "label": "phone_usage_while_walking",
-                    "confidence_score": phone_det.get("confidence_score", 0.8),
-                    "reason": "Person detected using phone while walking in prohibited area"
-                })
+    # ═══════════════════════════════════════════════════════════
+    # UNIVERSAL HAZARD: Phone usage while walking
+    # Berlaku di SEMUA area (Spray, Assembly, Central, dll)
+    # ═══════════════════════════════════════════════════════════
+    if "phone" in detected_labels and "person" in detected_labels:
+        phone_det = next((d for d in detections if d.get("label", "").lower() == "phone"), None)
+        if phone_det:
+            hazards.append({
+                "label": "phone_usage_while_walking",
+                "confidence_score": phone_det.get("confidence_score", 0.8),
+                "reason": "Person detected using phone while walking - universal safety violation"
+            })
     
-    # Rule 2: Trolley lane violation (Assembly Area)
-    # Note: Ini butuh spatial analysis (koordinat bbox), untuk sekarang hanya deteksi trolley
+    # ═══════════════════════════════════════════════════════════
+    # AREA-SPECIFIC HAZARDS
+    # ═══════════════════════════════════════════════════════════
+    
+    # Rule: Trolley lane violation (Assembly Area only)
     if "trolley_lane_violation" in special_rules:
         if "trolley" in detected_labels:
             # TODO: Implementasi pengecekan koordinat vs zona jalur kuning
             # Untuk sekarang, kita log bahwa trolley terdeteksi
             pass  # Placeholder untuk future spatial checking
     
-    # Rule 3: Person lane violation (Assembly Area)
+    # Rule: Person lane violation (Assembly Area only)
     if "person_lane_violation" in special_rules:
         # TODO: Implementasi pengecekan apakah person di jalur yang benar
         pass  # Placeholder untuk future spatial checking
