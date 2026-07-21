@@ -123,15 +123,21 @@ def check_special_hazards(detections: list, area_key: str) -> list:
     # ═══════════════════════════════════════════════════════════
     # UNIVERSAL HAZARD: Phone usage while walking
     # Berlaku di SEMUA area (Spray, Assembly, Central, dll)
+    # 
+    # CATATAN: Phone detection DISABLED sementara karena terlalu banyak
+    # false positive (detect phone di poster/sign, bukan phone nyata).
+    # Akan di-enable kembali setelah model YOLO ditrain ulang dengan
+    # confidence threshold lebih tinggi atau filter berdasarkan size bbox.
     # ═══════════════════════════════════════════════════════════
-    if "phone" in detected_labels and "person" in detected_labels:
-        phone_det = next((d for d in detections if d.get("label", "").lower() == "phone"), None)
-        if phone_det:
-            hazards.append({
-                "label": "phone_usage_while_walking",
-                "confidence_score": phone_det.get("confidence_score", 0.8),
-                "reason": "Person detected using phone while walking - universal safety violation"
-            })
+    # TEMPORARILY DISABLED - too many false positives
+    # if "phone" in detected_labels and "person" in detected_labels:
+    #     phone_det = next((d for d in detections if d.get("label", "").lower() == "phone"), None)
+    #     if phone_det:
+    #         hazards.append({
+    #             "label": "phone_usage_while_walking",
+    #             "confidence_score": phone_det.get("confidence_score", 0.8),
+    #             "reason": "Person detected using phone while walking - universal safety violation"
+    #         })
     
     # ═══════════════════════════════════════════════════════════
     # AREA-SPECIFIC HAZARDS
