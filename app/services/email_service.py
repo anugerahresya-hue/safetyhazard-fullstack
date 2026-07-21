@@ -16,7 +16,7 @@ GMAIL_REFRESH_TOKEN = os.getenv("GMAIL_REFRESH_TOKEN")
 GMAIL_SENDER        = os.getenv("GMAIL_SENDER")  # alamat Gmail pengirim, misal: safetyvision.ehss@gmail.com
 
 MAIL_FROM = os.getenv("MAIL_FROM", f"SafetyVision EHSS <{GMAIL_SENDER}>")
-APP_URL   = os.getenv("APP_URL", "https://safetyvision-backend-production.up.railway.app")
+APP_URL   = os.getenv("APP_URL", "https://safetyhazard-backend-production.up.railway.app")
 
 reset_tokens: dict = {}
 
