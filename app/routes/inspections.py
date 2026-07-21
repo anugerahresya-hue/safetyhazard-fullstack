@@ -10,7 +10,7 @@ from app.models.user import User
 from app.models.inspection import Inspection
 from app.models.hazard import Hazard
 from app.models.corrective_action import CorrectiveAction
-from app.services.ai_pipeline import call_yolo, call_yolo_bytes, call_rag, ENV_HAZARD_LABELS
+from app.services.ai_pipeline import call_yolo, call_yolo_bytes, call_rag, ENV_HAZARD_LABELS, run_full_pipeline
 from app.services.severity_rules import get_severity, compute_risk_score
 from app.services import email_service
 
@@ -316,64 +316,28 @@ async def analyze_inspection(
     if not inspection.image_url:
         raise HTTPException(status_code=400, detail="No image found for this inspection")
 
-
-    # 1. YOLO detection — raw detections diterima di sini.
+    # Gunakan run_full_pipeline yang sudah diupdate dengan area-based detection
+    area = inspection.area or "general"
     try:
-        detections = await call_yolo(inspection.image_url)
+        enriched_hazards = await run_full_pipeline(inspection.image_url, area)
     except Exception as e:
         raise HTTPException(
             status_code=502,
             detail=f"AI analysis failed (YOLO/RAG service error): {str(e)}"
         )
 
-    # 2. Inferensi pelanggaran PPE per-orang + teruskan hazard non-PPE.
-    #    Deteksi mentah person/helmet/safety_vest difilter keluar di dalam
-    #    infer_ppe_violations; hasilnya dipakai untuk RAG dan simpan ke DB.
-    enriched_hazards = infer_ppe_violations(detections)
-
-    ocr_text = ""
-
-    # Helper baca label & confidence lintas format dict (mentah vs sintetis).
-    def _label(d):
-        return d.get("label") or d.get("yolo_label") or ""
-
-    def _confidence(d):
-        # Terima "confidence" (dict sintetis) maupun "confidence_score" (deteksi
-        # mentah). Kalau kedua-duanya None/hilang, fallback ke 1.0 supaya
-        # get_severity tidak crash saat membandingkan confidence < 0.5.
-        c = d.get("confidence")
-        if c is None:
-            c = d.get("confidence_score")
-        if c is None:
-            c = 1.0
-        return c
-
-    # 3. RAG — kirim enriched_hazards sekaligus (batch). Gagal = non-fatal.
-    hazard_inputs = [
-        {
-            "label":            _label(d),
-            "confidence_score": _confidence(d),
-            "ocr_text":         ocr_text,
-            "area":             inspection.area or "",
-        }
-        for d in enriched_hazards
-    ]
-    try:
-        rag_results = await call_rag(hazard_inputs)
-    except Exception:
-        rag_results = []
-    rag_map = {r["label"]: r for r in rag_results if isinstance(r, dict) and "label" in r}
-
-    # 4. Simpan hazards + corrective actions dari enriched_hazards
+    # Simpan hazards + corrective actions dari enriched_hazards
     hazard_list = []
     for h in enriched_hazards:
-        label      = _label(h)
-        confidence = _confidence(h)
-        severity   = get_severity(label, confidence)
-        rag        = rag_map.get(label, {})
-        # Utamakan risk_level dari infer_ppe_violations bila ada, else severity.
-        risk_level = h.get("risk_level") or severity["risk_level"]
-        action_description = rag.get("action_description", "Refer to EHSS guidelines")
+        label      = h.get("yolo_label", "")
+        confidence = h.get("confidence_score", 1.0)
+        risk_level = h.get("risk_level", "medium")
+        ocr_text   = h.get("ocr_text", "")
+        
+        corrective = h.get("corrective_action", {})
+        action_description = corrective.get("action_description", "Refer to EHSS guidelines")
+        priority = corrective.get("priority", "medium")
+        due_date = corrective.get("due_date")
 
         hazard = Hazard(
             inspection_id=inspection.id,
@@ -390,8 +354,8 @@ async def analyze_inspection(
         action = CorrectiveAction(
             hazard_id=hazard.id,
             action_description=action_description,
-            priority=severity["priority"],
-            due_date=severity["due_date"],
+            priority=priority,
+            due_date=due_date,
             action_status="open"
         )
         db.add(action)
@@ -478,8 +442,11 @@ def build_preview_boxes(detections):
 @router.post("/live-preview")
 async def live_preview(
     image: UploadFile = File(...),
+    area: str = Form("general"),
     current_user: User = Depends(inspector_only),
 ):
+    from app.services.area_rules import check_ppe_compliance, check_special_hazards, get_area_config
+    
     image_bytes = await image.read()
 
     # Deteksi langsung dari bytes lewat /detect-sahi (sama seperti analisa
@@ -492,9 +459,27 @@ async def live_preview(
     except Exception:
         raw_detections = []
 
-    # Enrich sekali, pakai untuk kotak overlay MAUPUN summary (hindari
-    # menghitung infer_ppe_violations dua kali).
-    enriched = infer_ppe_violations(raw_detections)
+    # Area-based PPE detection menggunakan dataset baru
+    detected_labels = {d.get("label", "").lower() for d in raw_detections}
+    person_detections = [d for d in raw_detections if d.get("label", "").lower() == "person"]
+    person_count = len(person_detections)
+    
+    # Gabungkan environmental hazards + missing PPE + special hazards
+    enriched = []
+    
+    # Environmental hazards
+    for d in raw_detections:
+        if d.get("label", "").lower() in ENV_HAZARD_LABELS:
+            enriched.append(d)
+    
+    # PPE violations (area-based)
+    if person_count > 0:
+        missing_ppe = check_ppe_compliance(detected_labels, area, person_count)
+        enriched.extend(missing_ppe)
+    
+    # Special hazards (phone usage, lane violations)
+    special_hazards = check_special_hazards(raw_detections, area)
+    enriched.extend(special_hazards)
 
     # Kembalikan kotak yang sudah dienrich (hazard + inferensi PPE) supaya
     # frontend tinggal menggambar; box hanya muncul saat ada hazard nyata.
@@ -503,6 +488,11 @@ async def live_preview(
     return {
         "detections": build_preview_boxes(raw_detections),
         "summary": detection_summary(raw_detections, enriched),
+        "area_info": {
+            "area": area,
+            "display_name": get_area_config(area)["display_name"],
+            "required_ppe": get_area_config(area)["required_ppe"]
+        }
     }
 @router.get("/")
 def list_inspections(

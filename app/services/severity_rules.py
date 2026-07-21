@@ -1,17 +1,34 @@
 from datetime import date, timedelta
 
 # ── Severity lookup table ──────────────────────────────────
-# YOLO Johana cuma detect KEBERADAAN objek (helmet, safety_vest, dst),
-# bukan KETIADAANNYA. Jadi hazard "no_helmet"/"no_safety_vest" itu
-# hasil INFERENSI di ai_pipeline.py (person terdeteksi TAPI helmet
-# tidak ada di daftar deteksi) — bukan label mentah dari YOLO.
+# Dataset baru: person, trolley, phone, apron, safety_glasses, safety_gloves,
+# safety_boots, safety_helmet. Hazard "no_<ppe>" adalah hasil INFERENSI di
+# ai_pipeline.py (person terdeteksi TAPI PPE required tidak ada) — bukan label
+# mentah dari YOLO.
 SEVERITY_TABLE = {
+    # Environmental hazards (critical)
     "chemical_spill":  {"risk_level": "critical", "priority": "high",   "due_days": 1},
     "exposed_cable":   {"risk_level": "critical", "priority": "high",   "due_days": 1},
+    
+    # Environmental hazards (high)
     "wet_floor":       {"risk_level": "high",     "priority": "high",   "due_days": 3},
     "blocked_walkway": {"risk_level": "high",     "priority": "high",   "due_days": 3},
-    "no_helmet":       {"risk_level": "medium",   "priority": "medium", "due_days": 7},
-    "no_safety_vest":  {"risk_level": "medium",   "priority": "medium", "due_days": 7},
+    
+    # PPE violations (dataset baru)
+    "no_safety_helmet":  {"risk_level": "high",    "priority": "high",   "due_days": 3},
+    "no_safety_boots":   {"risk_level": "medium",  "priority": "medium", "due_days": 7},
+    "no_safety_glasses": {"risk_level": "medium",  "priority": "medium", "due_days": 7},
+    "no_safety_gloves":  {"risk_level": "medium",  "priority": "medium", "due_days": 7},
+    "no_apron":          {"risk_level": "medium",  "priority": "medium", "due_days": 7},
+    
+    # Behavioral hazards
+    "phone_usage_while_walking": {"risk_level": "medium", "priority": "medium", "due_days": 7},
+    "trolley_lane_violation":    {"risk_level": "high",   "priority": "high",   "due_days": 3},
+    "person_lane_violation":     {"risk_level": "medium", "priority": "medium", "due_days": 7},
+    
+    # Legacy support (untuk backward compatibility)
+    "no_helmet":       {"risk_level": "high",    "priority": "high",   "due_days": 3},
+    "no_safety_vest":  {"risk_level": "medium",  "priority": "medium", "due_days": 7},
 }
 
 # Fallback kalau label tidak dikenali

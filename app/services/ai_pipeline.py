@@ -1,6 +1,7 @@
 import os
 import httpx
 from app.services.severity_rules import get_severity
+from app.services.area_rules import check_ppe_compliance, check_special_hazards
 
 YOLO_SERVICE_URL = os.getenv("YOLO_SERVICE_URL", "http://localhost:8000")
 RAG_SERVICE_URL  = os.getenv("RAG_SERVICE_URL",  "http://localhost:8080")
@@ -69,7 +70,7 @@ async def call_rag(hazards: list) -> list:
 ENV_HAZARD_LABELS = {"wet_floor", "blocked_walkway", "exposed_cable", "chemical_spill"}
 
 
-async def run_full_pipeline(image_url: str) -> list:
+async def run_full_pipeline(image_url: str, area: str = "general") -> list:
     # 1. YOLO detection (pakai SAHI)
     detections = await call_yolo(image_url)
 
@@ -78,22 +79,27 @@ async def run_full_pipeline(image_url: str) -> list:
 
     detected_labels = {d.get("label", "").lower() for d in detections}
     person_detections = [d for d in detections if d.get("label", "").lower() == "person"]
+    person_count = len(person_detections)
 
     # a) Hazard lingkungan — setiap deteksi LANGSUNG jadi hazard
     hazard_detections = [
         d for d in detections if d.get("label", "").lower() in ENV_HAZARD_LABELS
     ]
 
-    # b) Hazard PPE — YOLO cuma detect KEBERADAAN helmet/safety_vest 
-    if person_detections:
-        person_confidence = max(d.get("confidence_score", 1.0) for d in person_detections)
-        if "helmet" not in detected_labels:
-            hazard_detections.append({"label": "no_helmet", "confidence_score": person_confidence})
-        if "safety_vest" not in detected_labels:
-            hazard_detections.append({"label": "no_safety_vest", "confidence_score": person_confidence})
+    # b) Hazard PPE — area-based detection menggunakan dataset baru
+    # Dataset baru punya: person, trolley, phone, apron, safety_glasses, 
+    # safety_gloves, safety_boots, safety_helmet (bukan "helmet"/"safety_vest" lagi)
+    if person_count > 0:
+        # Gunakan area_rules untuk cek PPE compliance per area
+        missing_ppe = check_ppe_compliance(detected_labels, area, person_count)
+        hazard_detections.extend(missing_ppe)
+    
+    # c) Special hazards (phone usage, trolley/person lane violations)
+    special_hazards = check_special_hazards(detections, area)
+    hazard_detections.extend(special_hazards)
 
     if not hazard_detections:
-        return []  # tidak ada hazard lingkungan, dan PPE lengkap → area aman
+        return []  # tidak ada hazard lingkungan, PPE lengkap, dan tidak ada special violations → area aman
 
     
     ocr_text = ""
