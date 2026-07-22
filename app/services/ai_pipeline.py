@@ -70,7 +70,7 @@ async def call_rag(hazards: list) -> list:
 ENV_HAZARD_LABELS = {"wet_floor", "blocked_walkway", "exposed_cable", "chemical_spill"}
 
 
-async def run_full_pipeline(image_url: str, area: str = "general") -> list:
+async def run_full_pipeline(image_url: str, area: str = "spray_decoration") -> list:
     # 1. YOLO detection (pakai SAHI)
     detections = await call_yolo(image_url)
 

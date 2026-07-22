@@ -317,7 +317,7 @@ async def analyze_inspection(
         raise HTTPException(status_code=400, detail="No image found for this inspection")
 
     # Gunakan run_full_pipeline yang sudah diupdate dengan area-based detection
-    area = inspection.area or "general"
+    area = inspection.area or "spray_decoration"
     try:
         enriched_hazards = await run_full_pipeline(inspection.image_url, area)
     except Exception as e:
@@ -442,7 +442,7 @@ def build_preview_boxes(detections):
 @router.post("/live-preview")
 async def live_preview(
     image: UploadFile = File(...),
-    area: str = Form("general"),
+    area: str = Form("spray_decoration"),
     current_user: User = Depends(inspector_only),
 ):
     from app.services.area_rules import check_ppe_compliance, check_special_hazards, get_area_config

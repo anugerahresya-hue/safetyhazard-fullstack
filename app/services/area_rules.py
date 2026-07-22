@@ -3,7 +3,11 @@ Area-specific PPE requirements dan hazard detection rules.
 
 Setiap area punya requirement PPE berbeda. Pipeline AI akan memeriksa
 apakah orang di area tersebut memakai PPE yang sesuai, dan juga memeriksa
-hazard spesifik area (misal: trolley keluar jalur di Assembly Area).
+hazard yang berlaku:
+
+- UNIVERSAL HAZARDS (semua area): phone usage while walking, environmental hazards
+  (wet_floor, blocked_walkway, exposed_cable, chemical_spill)
+- AREA-SPECIFIC HAZARDS: trolley/person lane violations (Assembly Area only)
 """
 
 # ── Area definitions ───────────────────────────────────────
@@ -12,19 +16,19 @@ AREA_PPE_REQUIREMENTS = {
         "display_name": "Spray/Decoration Area",
         "required_ppe": ["safety_glasses", "safety_gloves", "apron"],
         "optional_ppe": [],
-        "description": "Area pengecatan dan dekorasi - wajib pakai kacamata, sarung tangan, dan apron"
+        "description": "Area pengecatan dan dekorasi - wajib pakai kacamata, sarung tangan, dan apron. Universal hazards: jangan jalan sambil main HP"
     },
     "central_staging": {
         "display_name": "Central Staging Area",
         "required_ppe": ["safety_helmet", "safety_boots"],
         "optional_ppe": [],
-        "description": "Area staging - wajib pakai helm dan sepatu safety"
+        "description": "Area staging - wajib pakai helm dan sepatu safety. Universal hazards: jangan jalan sambil main HP"
     },
     "assembly": {
         "display_name": "Assembly Area",
         "required_ppe": [],
         "optional_ppe": [],
-        "description": "Area assembly - perhatikan jalur trolley dan pedestrian",
+        "description": "Area assembly - trolley harus di jalur kuning besar (tengah), orang jalan di jalur kecil (pinggir). Universal hazards: jangan jalan sambil main HP",
         "special_rules": ["trolley_lane_violation", "person_lane_violation"]
     },
 }
@@ -123,21 +127,15 @@ def check_special_hazards(detections: list, area_key: str) -> list:
     # ═══════════════════════════════════════════════════════════
     # UNIVERSAL HAZARD: Phone usage while walking
     # Berlaku di SEMUA area (Spray, Assembly, Central, dll)
-    # 
-    # CATATAN: Phone detection DISABLED sementara karena terlalu banyak
-    # false positive (detect phone di poster/sign, bukan phone nyata).
-    # Akan di-enable kembali setelah model YOLO ditrain ulang dengan
-    # confidence threshold lebih tinggi atau filter berdasarkan size bbox.
     # ═══════════════════════════════════════════════════════════
-    # TEMPORARILY DISABLED - too many false positives
-    # if "phone" in detected_labels and "person" in detected_labels:
-    #     phone_det = next((d for d in detections if d.get("label", "").lower() == "phone"), None)
-    #     if phone_det:
-    #         hazards.append({
-    #             "label": "phone_usage_while_walking",
-    #             "confidence_score": phone_det.get("confidence_score", 0.8),
-    #             "reason": "Person detected using phone while walking - universal safety violation"
-    #         })
+    if "phone" in detected_labels and "person" in detected_labels:
+        phone_det = next((d for d in detections if d.get("label", "").lower() == "phone"), None)
+        if phone_det:
+            hazards.append({
+                "label": "phone_usage_while_walking",
+                "confidence_score": phone_det.get("confidence_score", 0.8),
+                "reason": "Person detected using phone while walking - universal safety violation"
+            })
     
     # ═══════════════════════════════════════════════════════════
     # AREA-SPECIFIC HAZARDS
