@@ -1,156 +1,191 @@
 """
-Area-specific PPE requirements dan hazard detection rules.
+area_rules.py — PPE compliance rules per Mattel facility area.
 
-Setiap area punya requirement PPE berbeda. Pipeline AI akan memeriksa
-apakah orang di area tersebut memakai PPE yang sesuai, dan juga memeriksa
-hazard yang berlaku:
+Dipakai oleh ai_pipeline.py dan inspections.py untuk menentukan
+hazard apa yang perlu di-generate berdasarkan area inspeksi dan
+label yang dideteksi YOLO v2.0.0.
 
-- UNIVERSAL HAZARDS (semua area): phone usage while walking, environmental hazards
-  (wet_floor, blocked_walkway, exposed_cable, chemical_spill)
-- AREA-SPECIFIC HAZARDS: trolley/person lane violations (Assembly Area only)
+YOLO v2.0.0 classes:
+    person, trolley, phone, apron,
+    safety_glasses, safety_gloves, safety_boots, safety_helmet
 """
 
-# ── Area definitions ───────────────────────────────────────
-AREA_PPE_REQUIREMENTS = {
+from __future__ import annotations
+from datetime import datetime, timedelta
+
+# ── Area configuration ──────────────────────────────────────────────────────
+AREA_CONFIG: dict[str, dict] = {
     "spray_decoration": {
         "display_name": "Spray/Decoration Area",
         "required_ppe": ["safety_glasses", "safety_gloves", "apron"],
-        "optional_ppe": [],
-        "description": "Area pengecatan dan dekorasi - wajib pakai kacamata, sarung tangan, dan apron. Universal hazards: jangan jalan sambil main HP"
+        "violation_labels": {
+            "safety_glasses": "no_glasses",
+            "safety_gloves":  "no_gloves",
+            "apron":          "no_apron",
+        },
     },
     "central_staging": {
         "display_name": "Central Staging Area",
         "required_ppe": ["safety_helmet", "safety_boots"],
-        "optional_ppe": [],
-        "description": "Area staging - wajib pakai helm dan sepatu safety. Universal hazards: jangan jalan sambil main HP"
+        "violation_labels": {
+            "safety_helmet": "no_helmet",
+            "safety_boots":  "no_safety_shoes",
+        },
     },
     "assembly": {
         "display_name": "Assembly Area",
         "required_ppe": [],
-        "optional_ppe": [],
-        "description": "Area assembly - trolley harus di jalur kuning besar (tengah), orang jalan di jalur kecil (pinggir). Universal hazards: jangan jalan sambil main HP",
-        "special_rules": ["trolley_lane_violation", "person_lane_violation"]
+        "violation_labels": {},
+    },
+    "general": {
+        "display_name": "General",
+        "required_ppe": [],
+        "violation_labels": {},
     },
 }
 
-# Default jika area tidak dipilih atau tidak valid
-DEFAULT_AREA = "spray_decoration"
+# Normalise incoming area strings from the frontend
+_AREA_ALIAS: dict[str, str] = {
+    # exact keys
+    "spray_decoration": "spray_decoration",
+    "central_staging":  "central_staging",
+    "assembly":         "assembly",
+    "general":          "general",
+    # display-name variants (what the frontend may send)
+    "Spray/Decoration Area":  "spray_decoration",
+    "Central Staging Area":   "central_staging",
+    "Assembly Area":          "assembly",
+    "General":                "general",
+}
+
+# Risk levels for inferred violations
+VIOLATION_RISK: dict[str, str] = {
+    "no_glasses":      "high",
+    "no_gloves":       "high",
+    "no_apron":        "medium",
+    "no_helmet":       "high",
+    "no_safety_shoes": "high",
+    "phone_while_walking":    "medium",
+    "trolley_out_of_lane":    "high",
+    "person_out_of_lane":     "medium",
+}
+
+# Lane boundaries (fraction of image width) used for Assembly Area
+LANE_START: float = 0.2
+LANE_END:   float = 0.8
 
 
-def get_area_config(area_key: str) -> dict:
-    """
-    Ambil konfigurasi area berdasarkan key.
-    Return konfigurasi area atau default jika tidak ditemukan.
-    """
-    return AREA_PPE_REQUIREMENTS.get(area_key, AREA_PPE_REQUIREMENTS[DEFAULT_AREA])
+# ── Public helpers ──────────────────────────────────────────────────────────
+
+def get_area_config(area: str) -> dict:
+    """Return config dict for the given area string (normalised)."""
+    key = _AREA_ALIAS.get(area, "general")
+    return AREA_CONFIG.get(key, AREA_CONFIG["general"])
 
 
-def get_required_ppe_for_area(area_key: str) -> list:
-    """Return daftar PPE yang wajib dipakai di area tertentu."""
-    config = get_area_config(area_key)
-    return config.get("required_ppe", [])
-
-
-def get_special_rules_for_area(area_key: str) -> list:
-    """Return daftar special rules yang berlaku di area tertentu."""
-    config = get_area_config(area_key)
-    return config.get("special_rules", [])
-
-
-def get_all_areas() -> dict:
-    """Return semua area yang tersedia untuk dropdown UI."""
+def _make_violation(label: str, bbox: list | None = None, confidence: float = 0.90,
+                    inferred: bool = True) -> dict:
     return {
-        key: {
-            "display_name": config["display_name"],
-            "description": config["description"]
-        }
-        for key, config in AREA_PPE_REQUIREMENTS.items()
+        "label":          label,
+        "yolo_label":     label,
+        "confidence_score": confidence,
+        "bbox":           bbox or [],
+        "risk_level":     VIOLATION_RISK.get(label, "medium"),
+        "inferred":       inferred,
     }
 
 
-def check_ppe_compliance(detected_labels: set, area_key: str, person_count: int) -> list:
+def check_ppe_compliance(
+    detected_labels: set[str],
+    area: str,
+    person_count: int,
+) -> list[dict]:
     """
-    Periksa apakah PPE yang terdeteksi memenuhi requirement area.
-    
-    Args:
-        detected_labels: Set label yang terdeteksi YOLO (misal: {"person", "safety_helmet", ...})
-        area_key: Key area (misal: "spray_decoration")
-        person_count: Jumlah orang yang terdeteksi
-    
-    Returns:
-        List of missing PPE hazards dengan format:
-        [{"label": "no_safety_helmet", "confidence_score": <person_conf>}, ...]
+    Return a list of missing-PPE violation dicts based on which PPE labels
+    YOLO did NOT detect in the current frame.
+
+    Parameters
+    ----------
+    detected_labels : set of lowercased label strings from YOLO detections
+    area            : raw area string from the frontend / DB
+    person_count    : number of persons detected (violations only generated
+                      when at least one person is present)
     """
     if person_count == 0:
-        return []  # Tidak ada orang = tidak perlu cek PPE
-    
-    required_ppe = get_required_ppe_for_area(area_key)
-    missing_ppe = []
-    
-    for ppe in required_ppe:
-        if ppe not in detected_labels:
-            # PPE wajib tidak ditemukan = hazard
-            missing_label = f"no_{ppe}"
-            missing_ppe.append({
-                "label": missing_label,
-                "confidence_score": 0.95,  # High confidence untuk missing PPE
-                "reason": f"Required PPE '{ppe}' not detected in {get_area_config(area_key)['display_name']}"
-            })
-    
-    return missing_ppe
+        return []
+
+    config = get_area_config(area)
+    violations: list[dict] = []
+
+    for ppe_class, violation_label in config["violation_labels"].items():
+        if ppe_class.lower() not in detected_labels:
+            # Generate one violation entry per missing PPE class.
+            # We don't do per-person bbox matching here because
+            # `detected_labels` is already a set — per-person matching
+            # is handled inside infer_ppe_violations() in inspections.py
+            # when full bbox data is available.
+            violations.append(_make_violation(violation_label))
+
+    return violations
 
 
-def check_special_hazards(detections: list, area_key: str) -> list:
+def check_special_hazards(detections: list[dict], area: str) -> list[dict]:
     """
-    Periksa special hazards untuk area tertentu (phone usage, lane violations).
-    
-    UNIVERSAL HAZARDS (berlaku di SEMUA area, tidak peduli area_key):
-    - phone_usage_while_walking: Deteksi phone DAN person dalam frame yang sama.
-      Asumsi: kalau ada phone + person = orang jalan sambil main HP (hazard).
-    
-    AREA-SPECIFIC HAZARDS:
-    - trolley_lane_violation: Assembly Area (TODO: spatial checking)
-    - person_lane_violation: Assembly Area (TODO: spatial checking)
-    
-    Args:
-        detections: List deteksi mentah dari YOLO
-        area_key: Key area (untuk special rules area-specific)
-    
-    Returns:
-        List of special hazards yang ditemukan
+    Detect special hazards that require spatial or behavioural logic:
+      - phone_while_walking  (General area: phone detected + person present)
+      - trolley_out_of_lane  (Assembly area: trolley centre outside lane)
+      - person_out_of_lane   (Assembly area: person centre outside lane)
+
+    Parameters
+    ----------
+    detections : list of raw YOLO detection dicts
+                 Each dict: {"label": str, "confidence_score": float, "bbox": [x1,y1,x2,y2]}
+    area       : raw area string
     """
-    special_rules = get_special_rules_for_area(area_key)
-    hazards = []
-    
-    detected_labels = {d.get("label", "").lower() for d in detections}
-    
-    # ═══════════════════════════════════════════════════════════
-    # UNIVERSAL HAZARD: Phone usage while walking
-    # Berlaku di SEMUA area (Spray, Assembly, Central, dll)
-    # ═══════════════════════════════════════════════════════════
-    if "phone" in detected_labels and "person" in detected_labels:
-        phone_det = next((d for d in detections if d.get("label", "").lower() == "phone"), None)
-        if phone_det:
-            hazards.append({
-                "label": "phone_usage_while_walking",
-                "confidence_score": phone_det.get("confidence_score", 0.8),
-                "reason": "Person detected using phone while walking - universal safety violation"
-            })
-    
-    # ═══════════════════════════════════════════════════════════
-    # AREA-SPECIFIC HAZARDS
-    # ═══════════════════════════════════════════════════════════
-    
-    # Rule: Trolley lane violation (Assembly Area only)
-    if "trolley_lane_violation" in special_rules:
-        if "trolley" in detected_labels:
-            # TODO: Implementasi pengecekan koordinat vs zona jalur kuning
-            # Untuk sekarang, kita log bahwa trolley terdeteksi
-            pass  # Placeholder untuk future spatial checking
-    
-    # Rule: Person lane violation (Assembly Area only)
-    if "person_lane_violation" in special_rules:
-        # TODO: Implementasi pengecekan apakah person di jalur yang benar
-        pass  # Placeholder untuk future spatial checking
-    
+    key = _AREA_ALIAS.get(area, "general")
+    hazards: list[dict] = []
+
+    labels_present = {d.get("label", "").lower() for d in detections}
+
+    if key == "general":
+        # phone_while_walking: any phone detected when a person is also present
+        if "phone" in labels_present and "person" in labels_present:
+            for d in detections:
+                if d.get("label", "").lower() == "phone":
+                    hazards.append(_make_violation(
+                        "phone_while_walking",
+                        bbox=d.get("bbox", []),
+                        confidence=float(d.get("confidence_score", 0.90)),
+                        inferred=False,
+                    ))
+
+    elif key == "assembly":
+        for d in detections:
+            label = d.get("label", "").lower()
+            bbox  = d.get("bbox", [])
+            if label not in ("trolley", "person") or len(bbox) < 4:
+                continue
+
+            x1, _y1, x2, _y2 = bbox
+            centre_x_fraction = (x1 + x2) / 2  # assumes bbox in pixel coords;
+            # if YOLO returns normalised [0-1] coords this is already correct.
+            # For pixel coords we'd need image width — use a safe heuristic:
+            # treat bbox values > 1 as pixel coords → normalise by 640 default.
+            if centre_x_fraction > 1:
+                centre_x_fraction = centre_x_fraction / 640.0
+
+            out_of_lane = (
+                centre_x_fraction < LANE_START or centre_x_fraction > LANE_END
+            )
+            if out_of_lane:
+                violation_label = (
+                    "trolley_out_of_lane" if label == "trolley" else "person_out_of_lane"
+                )
+                hazards.append(_make_violation(
+                    violation_label,
+                    bbox=bbox,
+                    confidence=float(d.get("confidence_score", 0.90)),
+                    inferred=False,
+                ))
+
     return hazards
