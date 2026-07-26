@@ -22,16 +22,41 @@ async def call_yolo_bytes(image_bytes: bytes, confidence: float = YOLO_CONFIDENC
     sehingga jauh lebih akurat mendeteksi objek kecil (helmet, vest, person
     jauh) dibanding /detect standar. Dipakai baik oleh live-preview maupun
     analisa penuh supaya keduanya konsisten & akurat.
+    
+    Retry logic: 500 errors bisa sementara (YOLO service restart/overload).
     """
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        files = {"image": ("image.jpg", image_bytes, "image/jpeg")}
-        response = await client.post(
-            f"{YOLO_SERVICE_URL}/detect-sahi",
-            files=files,
-            params={"confidence": confidence, "slice_size": YOLO_SLICE_SIZE},
-        )
-        response.raise_for_status()
-        return response.json().get("detections", [])
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                files = {"image": ("image.jpg", image_bytes, "image/jpeg")}
+                response = await client.post(
+                    f"{YOLO_SERVICE_URL}/detect-sahi",
+                    files=files,
+                    params={"confidence": confidence, "slice_size": YOLO_SLICE_SIZE},
+                )
+                response.raise_for_status()
+                return response.json().get("detections", [])
+        except httpx.HTTPStatusError as e:
+            # 500 errors could be transient, retry
+            if e.response.status_code >= 500 and attempt < max_retries - 1:
+                import asyncio
+                await asyncio.sleep(retry_delay)
+                continue
+            # 4xx errors or final retry, raise
+            raise
+        except httpx.RequestError as e:
+            # Network errors, retry
+            if attempt < max_retries - 1:
+                import asyncio
+                await asyncio.sleep(retry_delay)
+                continue
+            raise
+    
+    # Should not reach here, but return empty if all retries fail
+    return []
 
 
 async def call_yolo(image_url: str, confidence: float = YOLO_CONFIDENCE) -> list:

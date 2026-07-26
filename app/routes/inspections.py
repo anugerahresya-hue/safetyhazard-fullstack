@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 import uuid
 import os
+import httpx
 from supabase import create_client
 from app.database import get_db
 from app.middleware.auth import get_current_user, inspector_only, manager_or_admin
@@ -320,10 +321,24 @@ async def analyze_inspection(
     area = inspection.area or "spray_decoration"
     try:
         enriched_hazards = await run_full_pipeline(inspection.image_url, area)
-    except Exception as e:
+    except httpx.HTTPStatusError as e:
+        # YOLO/RAG service HTTP error dengan detail lebih jelas
+        service_name = "YOLO" if "detect" in str(e.request.url) else "RAG"
         raise HTTPException(
             status_code=502,
-            detail=f"AI analysis failed (YOLO/RAG service error): {str(e)}"
+            detail=f"{service_name} service unavailable (HTTP {e.response.status_code}). The AI detection service is temporarily down. Please try again in a few moments."
+        )
+    except httpx.RequestError as e:
+        # Network error (timeout, connection refused, etc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cannot connect to AI detection service. Please check if the YOLO service is running or try again later."
+        )
+    except Exception as e:
+        # Unexpected error
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI analysis failed: {str(e)}"
         )
 
     # Simpan hazards + corrective actions dari enriched_hazards
