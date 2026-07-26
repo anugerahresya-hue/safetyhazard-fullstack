@@ -417,7 +417,7 @@ async def analyze_inspection(
         "inspection_id": str(inspection.id),
         "status": "analyzed",
         "hazards": hazard_list,
-        "summary": detection_summary(detections, enriched_hazards),
+        "summary": detection_summary(enriched_hazards, enriched_hazards),
     }
 
 
