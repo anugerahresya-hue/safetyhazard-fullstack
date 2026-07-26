@@ -138,12 +138,17 @@ async def call_rag(hazards: list) -> list:
 ENV_HAZARD_LABELS = {"wet_floor", "blocked_walkway", "exposed_cable", "chemical_spill"}
 
 
-async def run_full_pipeline(image_url: str, area: str = "spray_decoration") -> list:
+async def run_full_pipeline(image_url: str, area: str = "spray_decoration") -> tuple:
+    """
+    Return tuple: (raw_detections, enriched_hazards)
+    - raw_detections: deteksi mentah dari YOLO (untuk summary stats)
+    - enriched_hazards: hazard yang sudah diproses dengan RAG + severity
+    """
     # 1. YOLO detection (pakai SAHI)
     detections = await call_yolo(image_url)
 
     if not detections:
-        return []
+        return ([], [])  # Return empty tuple
 
     detected_labels = {d.get("label", "").lower() for d in detections}
     person_detections = [d for d in detections if d.get("label", "").lower() == "person"]
@@ -167,7 +172,7 @@ async def run_full_pipeline(image_url: str, area: str = "spray_decoration") -> l
     hazard_detections.extend(special_hazards)
 
     if not hazard_detections:
-        return []  # tidak ada hazard lingkungan, PPE lengkap, dan tidak ada special violations → area aman
+        return (detections, [])  # Ada deteksi tapi tidak ada hazard → area aman
 
     
     ocr_text = ""
@@ -211,4 +216,4 @@ async def run_full_pipeline(image_url: str, area: str = "spray_decoration") -> l
             }
         })
 
-    return hazards
+    return (detections, hazards)  # Return tuple: (raw_detections, enriched_hazards)

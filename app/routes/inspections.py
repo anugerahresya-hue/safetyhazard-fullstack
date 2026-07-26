@@ -320,7 +320,7 @@ async def analyze_inspection(
     # Gunakan run_full_pipeline yang sudah diupdate dengan area-based detection
     area = inspection.area or "spray_decoration"
     try:
-        enriched_hazards = await run_full_pipeline(inspection.image_url, area)
+        raw_detections, enriched_hazards = await run_full_pipeline(inspection.image_url, area)
     except httpx.HTTPStatusError as e:
         # YOLO/RAG service HTTP error dengan detail lebih jelas
         service_name = "YOLO" if "detect" in str(e.request.url) else "RAG"
@@ -417,7 +417,7 @@ async def analyze_inspection(
         "inspection_id": str(inspection.id),
         "status": "analyzed",
         "hazards": hazard_list,
-        "summary": detection_summary(enriched_hazards, enriched_hazards),
+        "summary": detection_summary(raw_detections, enriched_hazards),
     }
 
 
