@@ -78,7 +78,13 @@ async def call_yolo_bytes(image_bytes: bytes, confidence: float = YOLO_CONFIDENC
                 response = await client.post(
                     f"{YOLO_SERVICE_URL}/detect-sahi",
                     files=files,
-                    params={"confidence": confidence, "slice_size": YOLO_SLICE_SIZE},
+                    params={
+                        "confidence": confidence,
+                        "slice_size": YOLO_SLICE_SIZE,
+                        "is_walking": True,
+                        "lane_start": 0.2,
+                        "lane_end": 0.8,
+                    },
                 )
                 response.raise_for_status()
                 return response.json().get("detections", [])

@@ -82,21 +82,23 @@ def compute_iou(box_a, box_b):
     return inter / union
 
 
-def infer_ppe_violations(detections):
+def infer_ppe_violations(detections, area=""):
     """
-    Inferensi pelanggaran PPE per-orang dari deteksi mentah YOLO.
-
-    Return: list baru berisi HANYA (1) pelanggaran PPE hasil inferensi
-    ("no_helmet"/"no_safety_vest") + (2) hazard non-PPE (dengan risk_level
-    dilekatkan). Deteksi mentah person/helmet/hard_hat/safety_vest/vest
-    TIDAK ikut muncul di output.
-
-    Semua akses key dict pakai .get() dengan default; aman terhadap input
-    kosong, dict tanpa key, tidak ada person, atau person tanpa helmet/vest.
+    Inferensi pelanggaran PPE per-orang dari deteksi mentah YOLO v2.0.0.
+    
+    YOLO v2.0.0 classes: person, trolley, phone, apron, safety_glasses,
+    safety_gloves, safety_boots, safety_helmet
+    
+    Area-specific PPE requirements:
+    - Spray/Decoration: safety_glasses, safety_gloves, apron
+    - Central Staging: safety_helmet, safety_boots
+    - Assembly: lane violations (trolley & person)
+    - General/All: phone_while_walking
     """
-    HELMET_LABELS = {"helmet", "hard_hat"}
-    VEST_LABELS = {"safety_vest", "vest"}
-    PPE_LABELS = {"person", "helmet", "hard_hat", "safety_vest", "vest"}
+    # YOLO v2.0.0 class names
+    PPE_CLASSES = {"person", "safety_helmet", "safety_glasses", "safety_gloves", 
+                   "safety_boots", "apron", "trolley", "phone"}
+    
     RISK_MAP = {
         "blocked_walkway":   "high",
         "wet_floor":         "medium",
@@ -105,78 +107,193 @@ def infer_ppe_violations(detections):
         "spill":             "medium",
         "missing_guardrail": "critical",
     }
-    HELMET_IOU_THRESHOLD = 0.05
-    VEST_IOU_THRESHOLD = 0.10
-
+    
+    PPE_IOU_THRESHOLD = 0.05  # For helmet, glasses, gloves, boots vs person top-half
+    APRON_IOU_THRESHOLD = 0.10  # For apron vs person full bbox
+    LANE_START = 0.2  # Lane boundary start (20% from left)
+    LANE_END = 0.8    # Lane boundary end (80% from left)
+    
     if not isinstance(detections, (list, tuple)) or not detections:
         return []
-
-    persons, helmets, vests, output = [], [], [], []
-
+    
+    # Separate detections by class
+    persons = []
+    helmets = []
+    glasses = []
+    gloves = []
+    boots = []
+    aprons = []
+    trolleys = []
+    phones = []
+    other_hazards = []
+    
     for det in detections:
         if not isinstance(det, dict):
             continue
         label = str(det.get("label", "")).lower()
-
+        
         if label == "person":
             persons.append(det)
-        elif label in HELMET_LABELS:
+        elif label == "safety_helmet":
             helmets.append(det)
-        elif label in VEST_LABELS:
-            vests.append(det)
-        elif label in PPE_LABELS:
-            # PPE lain yang harus difilter keluar — jangan diteruskan
-            continue
-        else:
-            # Hazard non-PPE → teruskan dengan risk_level dari mapping
+        elif label == "safety_glasses":
+            glasses.append(det)
+        elif label == "safety_gloves":
+            gloves.append(det)
+        elif label == "safety_boots":
+            boots.append(det)
+        elif label == "apron":
+            aprons.append(det)
+        elif label == "trolley":
+            trolleys.append(det)
+        elif label == "phone":
+            phones.append(det)
+        elif label not in PPE_CLASSES:
+            # Other hazards (environmental, etc.)
             hazard = dict(det)
             hazard["risk_level"] = RISK_MAP.get(label, "medium")
-            output.append(hazard)
-
-    # Cek PPE per orang lewat hubungan spasial (IoU)
+            other_hazards.append(hazard)
+    
+    output = other_hazards.copy()
+    
+    # Area-specific PPE inference
+    area_lower = area.lower() if area else ""
+    
     for person in persons:
-        # bbox bisa dict {"x1",...} (format YOLO) atau list — normalisasi dulu.
         person_bbox = bbox_to_list(person.get("bbox"))
         if not person_bbox:
-            # Tanpa bbox valid → tidak bisa inferensi spasial, lewati orang ini
             continue
-
+        
         px1, py1, px2, py2 = person_bbox
-
         y_top, y_bot = min(py1, py2), max(py1, py2)
         x_left, x_right = min(px1, px2), max(px1, px2)
-        # Region kepala = separuh ATAS bbox person (untuk cek helmet)
+        
+        # Top half for helmet, glasses, gloves, boots
         top_half = [x_left, y_top, x_right, y_top + (y_bot - y_top) / 2.0]
-
-        wearing_helmet = any(
-            compute_iou(h.get("bbox", []), top_half) >= HELMET_IOU_THRESHOLD
-            for h in helmets
-        )
-        # Vest dicek terhadap SELURUH bbox person
-        wearing_vest = any(
-            compute_iou(v.get("bbox", []), person_bbox) >= VEST_IOU_THRESHOLD
-            for v in vests
-        )
-
-        if not wearing_helmet:
+        
+        # Spray/Decoration Area: glasses, gloves, apron
+        if "spray" in area_lower or "decoration" in area_lower:
+            wearing_glasses = any(
+                compute_iou(g.get("bbox", []), top_half) >= PPE_IOU_THRESHOLD
+                for g in glasses
+            )
+            wearing_gloves = any(
+                compute_iou(g.get("bbox", []), top_half) >= PPE_IOU_THRESHOLD
+                for g in gloves
+            )
+            wearing_apron = any(
+                compute_iou(a.get("bbox", []), person_bbox) >= APRON_IOU_THRESHOLD
+                for a in aprons
+            )
+            
+            if not wearing_glasses:
+                output.append({
+                    "label": "no_safety_glasses",
+                    "yolo_label": "no_safety_glasses",
+                    "confidence": 0.90,
+                    "bbox": person_bbox,
+                    "risk_level": "high",
+                    "inferred": True,
+                })
+            if not wearing_gloves:
+                output.append({
+                    "label": "no_safety_gloves",
+                    "yolo_label": "no_safety_gloves",
+                    "confidence": 0.90,
+                    "bbox": person_bbox,
+                    "risk_level": "high",
+                    "inferred": True,
+                })
+            if not wearing_apron:
+                output.append({
+                    "label": "no_apron",
+                    "yolo_label": "no_apron",
+                    "confidence": 0.90,
+                    "bbox": person_bbox,
+                    "risk_level": "high",
+                    "inferred": True,
+                })
+        
+        # Central Staging Area: helmet, safety_boots
+        elif "central" in area_lower or "staging" in area_lower:
+            wearing_helmet = any(
+                compute_iou(h.get("bbox", []), top_half) >= PPE_IOU_THRESHOLD
+                for h in helmets
+            )
+            wearing_boots = any(
+                compute_iou(b.get("bbox", []), top_half) >= PPE_IOU_THRESHOLD
+                for b in boots
+            )
+            
+            if not wearing_helmet:
+                output.append({
+                    "label": "no_safety_helmet",
+                    "yolo_label": "no_safety_helmet",
+                    "confidence": 0.90,
+                    "bbox": person_bbox,
+                    "risk_level": "high",
+                    "inferred": True,
+                })
+            if not wearing_boots:
+                output.append({
+                    "label": "no_safety_boots",
+                    "yolo_label": "no_safety_boots",
+                    "confidence": 0.90,
+                    "bbox": person_bbox,
+                    "risk_level": "high",
+                    "inferred": True,
+                })
+        
+        # Assembly Area: check person lane violations
+        elif "assembly" in area_lower:
+            # Person should stay in side lanes (< 20% or > 80%)
+            center_x = (x_left + x_right) / 2.0
+            # Assume image width from bbox bounds (rough estimate)
+            image_width = max(px2, x_right, 1.0)
+            if LANE_START < (center_x / image_width) < LANE_END:
+                output.append({
+                    "label": "person_out_of_lane",
+                    "yolo_label": "person_out_of_lane",
+                    "confidence": person.get("confidence_score", 0.90),
+                    "bbox": person_bbox,
+                    "risk_level": "high",
+                    "inferred": False,
+                })
+    
+    # Assembly Area: trolley lane violations
+    if "assembly" in area_lower:
+        for trolley in trolleys:
+            trolley_bbox = bbox_to_list(trolley.get("bbox"))
+            if not trolley_bbox:
+                continue
+            
+            tx1, ty1, tx2, ty2 = trolley_bbox
+            center_x = (tx1 + tx2) / 2.0
+            image_width = max(tx2, 1.0)
+            
+            # Trolley should stay in center lane (20%-80%)
+            if (center_x / image_width) < LANE_START or (center_x / image_width) > LANE_END:
+                output.append({
+                    "label": "trolley_out_of_lane",
+                    "yolo_label": "trolley_out_of_lane",
+                    "confidence": trolley.get("confidence_score", 0.90),
+                    "bbox": trolley_bbox,
+                    "risk_level": "high",
+                    "inferred": False,
+                })
+    
+    # Universal: phone_while_walking (all areas)
+    if phones and persons:
+        for phone in phones:
             output.append({
-                "label":      "no_helmet",
-                "yolo_label": "no_helmet",
-                "confidence": 0.90,
-                "bbox":       person_bbox,
-                "risk_level": "high",
-                "inferred":   True,
+                "label": "phone_while_walking",
+                "yolo_label": "phone_while_walking",
+                "confidence": phone.get("confidence_score", 0.90),
+                "bbox": bbox_to_list(phone.get("bbox", [])),
+                "risk_level": "medium",
+                "inferred": False,
             })
-        if not wearing_vest:
-            output.append({
-                "label":      "no_safety_vest",
-                "yolo_label": "no_safety_vest",
-                "confidence": 0.90,
-                "bbox":       person_bbox,
-                "risk_level": "high",
-                "inferred":   True,
-            })
-
+    
     return output
 
 
@@ -421,13 +538,12 @@ async def analyze_inspection(
     }
 
 
-def build_preview_boxes(detections):
+def build_preview_boxes(detections, area=""):
     """
     Ubah deteksi mentah YOLO menjadi kotak siap-gambar untuk frontend.
 
-    - Hazard lingkungan + pelanggaran PPE hasil inferensi (no_helmet/
-      no_safety_vest) → danger=True (merah).
-    - Deteksi mentah person/helmet/safety_vest TIDAK ikut (difilter oleh
+    - Hazard lingkungan + pelanggaran PPE hasil inferensi (area-specific) → danger=True (merah).
+    - Deteksi mentah person/PPE items TIDAK ikut (difilter oleh
       infer_ppe_violations), jadi overlay hanya menampilkan yang BENAR-BENAR
       hazard. Kalau tidak ada hazard → list kosong (box hilang).
 
@@ -435,7 +551,7 @@ def build_preview_boxes(detections):
     bbox dinormalisasi ke list; kotak tanpa bbox valid dibuang (tak bisa
     digambar).
     """
-    enriched = infer_ppe_violations(detections)
+    enriched = infer_ppe_violations(detections, area)
     boxes = []
     for d in enriched:
         bbox = bbox_to_list(d.get("bbox"))
@@ -501,7 +617,7 @@ async def live_preview(
     # `summary` memberi tahu panel apakah ada orang di frame + breakdown PPE
     # per-pekerja + risk score gabungan.
     return {
-        "detections": build_preview_boxes(raw_detections),
+        "detections": build_preview_boxes(raw_detections, area),
         "summary": detection_summary(raw_detections, enriched),
         "area_info": {
             "area": area,
