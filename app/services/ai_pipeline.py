@@ -1,5 +1,7 @@
 import os
 import httpx
+from io import BytesIO
+from PIL import Image
 from app.services.severity_rules import get_severity
 from app.services.area_rules import check_ppe_compliance, check_special_hazards
 
@@ -13,6 +15,45 @@ RAG_SERVICE_URL  = os.getenv("RAG_SERVICE_URL",  "http://localhost:8080")
 YOLO_CONFIDENCE = float(os.getenv("YOLO_CONFIDENCE", "0.20"))
 # Ukuran slice SAHI (pixel). Lebih kecil = lebih sensitif ke objek kecil.
 YOLO_SLICE_SIZE = int(os.getenv("YOLO_SLICE_SIZE", "320"))
+# Max dimension untuk resize image sebelum kirim ke YOLO (mengurangi beban CPU)
+MAX_IMAGE_DIMENSION = int(os.getenv("MAX_IMAGE_DIMENSION", "1280"))
+
+
+def resize_image_if_needed(image_bytes: bytes, max_dimension: int = MAX_IMAGE_DIMENSION) -> bytes:
+    """
+    Downscale image jika lebih besar dari max_dimension, maintain aspect ratio.
+    YOLO service running di CPU, image besar + SAHI bisa timeout/OOM.
+    """
+    try:
+        img = Image.open(BytesIO(image_bytes))
+        
+        # Convert RGBA to RGB if needed
+        if img.mode in ("RGBA", "LA", "P"):
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            if img.mode == "P":
+                img = img.convert("RGBA")
+            background.paste(img, mask=img.split()[-1] if img.mode in ("RGBA", "LA") else None)
+            img = background
+        
+        # If already small enough, return as-is
+        if img.width <= max_dimension and img.height <= max_dimension:
+            return image_bytes
+        
+        # Calculate new dimensions (maintain aspect ratio)
+        ratio = min(max_dimension / img.width, max_dimension / img.height)
+        new_width = int(img.width * ratio)
+        new_height = int(img.height * ratio)
+        
+        # Resize using high-quality filter
+        img = img.resize((new_width, new_height), Image.LANCZOS)
+        
+        # Convert back to bytes
+        output = BytesIO()
+        img.save(output, format='JPEG', quality=85, optimize=True)
+        return output.getvalue()
+    except Exception:
+        # If resize fails, return original
+        return image_bytes
 
 
 async def call_yolo_bytes(image_bytes: bytes, confidence: float = YOLO_CONFIDENCE) -> list:
@@ -24,7 +65,11 @@ async def call_yolo_bytes(image_bytes: bytes, confidence: float = YOLO_CONFIDENC
     analisa penuh supaya keduanya konsisten & akurat.
     
     Retry logic: 500 errors bisa sementara (YOLO service restart/overload).
+    Image resizing: Downscale ke 1280px untuk mengurangi beban CPU YOLO service.
     """
+    # Resize image untuk mengurangi beban YOLO service (running di CPU)
+    image_bytes = resize_image_if_needed(image_bytes)
+    
     max_retries = 3
     retry_delay = 2  # seconds
     
