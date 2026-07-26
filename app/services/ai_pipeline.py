@@ -9,10 +9,8 @@ YOLO_SERVICE_URL = os.getenv("YOLO_SERVICE_URL", "http://localhost:8000")
 RAG_SERVICE_URL  = os.getenv("RAG_SERVICE_URL",  "http://localhost:8080")
 
 
-# Confidence threshold default untuk YOLO. Diturunkan dari default service
-# (0.25) supaya objek kecil (helmet/vest dari jauh) tidak gampang terlewat —
-# hasil uji: pada 0.25 sebuah helmet ke-skip, muncul di ambang lebih rendah.
-YOLO_CONFIDENCE = float(os.getenv("YOLO_CONFIDENCE", "0.20"))
+# Confidence threshold default untuk YOLO. Diupdate ke 0.25 (API minimum).
+YOLO_CONFIDENCE = float(os.getenv("YOLO_CONFIDENCE", "0.25"))
 # Ukuran slice SAHI (pixel). Lebih kecil = lebih sensitif ke objek kecil.
 YOLO_SLICE_SIZE = int(os.getenv("YOLO_SLICE_SIZE", "320"))
 # Max dimension untuk resize image sebelum kirim ke YOLO (mengurangi beban CPU)
