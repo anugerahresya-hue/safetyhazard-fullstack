@@ -300,21 +300,19 @@ def detection_summary(detections, enriched_hazards=None):
     """
     Ringkasan untuk panel status frontend + skor risiko agregat.
 
-    `detections`      = deteksi MENTAH YOLO (buat hitung jumlah orang/helmet/vest).
+    `detections`      = deteksi MENTAH YOLO v2.0.0 (buat hitung jumlah orang/PPE items).
     `enriched_hazards`= hasil infer_ppe_violations (pelanggaran PPE per-orang +
                         hazard lingkungan dengan risk_level). Dipakai untuk
                         breakdown per-pekerja & skor risiko.
-
-    Kenapa keduanya: panel tidak cukup hanya tahu "ada pelanggaran atau tidak"
-    (biner). Dengan menghitung `no_helmet`/`no_safety_vest` per-orang dari
-    enriched_hazards + jumlah orang dari deteksi mentah, panel bisa lapor
-    "2 dari 5 pekerja tanpa helmet" dan menghitung risk score gabungan —
-    bukan sekadar Missing/Present untuk seluruh frame.
     """
-    HELMET_LABELS = {"helmet", "hard_hat"}
-    VEST_LABELS = {"safety_vest", "vest"}
+    # YOLO v2.0.0 class names
+    HELMET_LABELS = {"safety_helmet"}
+    GLASSES_LABELS = {"safety_glasses"}
+    GLOVES_LABELS = {"safety_gloves"}
+    BOOTS_LABELS = {"safety_boots"}
+    APRON_LABELS = {"apron"}
 
-    person = helmet = vest = 0
+    person = helmet = glasses = gloves = boots = apron = 0
     if isinstance(detections, (list, tuple)):
         for d in detections:
             if not isinstance(d, dict):
@@ -324,22 +322,37 @@ def detection_summary(detections, enriched_hazards=None):
                 person += 1
             elif label in HELMET_LABELS:
                 helmet += 1
-            elif label in VEST_LABELS:
-                vest += 1
+            elif label in GLASSES_LABELS:
+                glasses += 1
+            elif label in GLOVES_LABELS:
+                gloves += 1
+            elif label in BOOTS_LABELS:
+                boots += 1
+            elif label in APRON_LABELS:
+                apron += 1
 
     # Breakdown pelanggaran per-orang + hazard lingkungan dari enriched_hazards.
     missing_helmet = 0
-    missing_vest = 0
+    missing_glasses = 0
+    missing_gloves = 0
+    missing_boots = 0
+    missing_apron = 0
     env = set()
     if isinstance(enriched_hazards, (list, tuple)):
         for h in enriched_hazards:
             if not isinstance(h, dict):
                 continue
             label = str(h.get("label") or h.get("yolo_label") or "").lower()
-            if label == "no_helmet":
+            if label == "no_safety_helmet":
                 missing_helmet += 1
-            elif label == "no_safety_vest":
-                missing_vest += 1
+            elif label == "no_safety_glasses":
+                missing_glasses += 1
+            elif label == "no_safety_gloves":
+                missing_gloves += 1
+            elif label == "no_safety_boots":
+                missing_boots += 1
+            elif label == "no_apron":
+                missing_apron += 1
             elif label in ENV_HAZARD_LABELS:
                 env.add(label)
 
@@ -348,11 +361,23 @@ def detection_summary(detections, enriched_hazards=None):
     return {
         "person_count":        person,
         "helmet_count":        helmet,
-        "vest_count":          vest,
+        "glasses_count":       glasses,
+        "gloves_count":        gloves,
+        "boots_count":         boots,
+        "apron_count":         apron,
+        "vest_count":          0,  # Deprecated in YOLO v2.0.0
         "has_person":          person > 0,
         # Berapa orang yang APD-nya tidak terpakai (hasil inferensi spasial).
         "workers_missing_helmet": missing_helmet,
-        "workers_missing_vest":   missing_vest,
+        "workers_missing_glasses": missing_glasses,
+        "workers_missing_gloves": missing_gloves,
+        "workers_missing_boots": missing_boots,
+        "workers_missing_apron": missing_apron,
+        "workers_missing_vest":   0,  # Deprecated
+        "env_hazards":         sorted(env),
+        "risk_score":          risk["score"],
+        "risk_band":           risk["band"],
+    }
         "env_hazards":         sorted(env),
         "risk_score":          risk["score"],
         "risk_band":           risk["band"],
