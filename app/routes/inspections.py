@@ -673,18 +673,33 @@ async def analyze_frame(
             for h in enriched_hazards
         )
         
+        # Extract bbox values - YOLO returns dict with x1, y1, x2, y2, width, height
+        if isinstance(bbox, dict):
+            x1 = bbox.get("x1", 0)
+            y1 = bbox.get("y1", 0)
+            x2 = bbox.get("x2", 0)
+            y2 = bbox.get("y2", 0)
+            width = bbox.get("width", 0)
+            height = bbox.get("height", 0)
+        else:
+            # Fallback for list format [x1, y1, x2, y2]
+            x1 = bbox[0] if len(bbox) > 0 else 0
+            y1 = bbox[1] if len(bbox) > 1 else 0
+            x2 = bbox[2] if len(bbox) > 2 else 0
+            y2 = bbox[3] if len(bbox) > 3 else 0
+            width = x2 - x1
+            height = y2 - y1
+        
         detections_with_bbox.append({
             "label": label,
             "confidence_score": det.get("confidence_score", 0),
             "bbox": {
-                "x": bbox.get("x1", 0) if isinstance(bbox, dict) else (bbox[0] if bbox else 0),
-                "y": bbox.get("y1", 0) if isinstance(bbox, dict) else (bbox[1] if bbox else 0),
-                "width": bbox.get("width", 0) if isinstance(bbox, dict) else (
-                    (bbox[2] - bbox[0]) if len(bbox) >= 4 else 0
-                ),
-                "height": bbox.get("height", 0) if isinstance(bbox, dict) else (
-                    (bbox[3] - bbox[1]) if len(bbox) >= 4 else 0
-                ),
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+                "width": width,
+                "height": height,
             },
             "is_violation": is_violation,
         })
@@ -693,15 +708,24 @@ async def analyze_frame(
     for hazard in enriched_hazards:
         if hazard.get("inferred"):  # PPE violations
             bbox = hazard.get("bbox", [])
-            if bbox:
+            if bbox and len(bbox) >= 4:
+                x1 = bbox[0]
+                y1 = bbox[1]
+                x2 = bbox[2]
+                y2 = bbox[3]
+                width = x2 - x1
+                height = y2 - y1
+                
                 detections_with_bbox.append({
                     "label": hazard.get("label", ""),
                     "confidence_score": hazard.get("confidence", 0.9),
                     "bbox": {
-                        "x": bbox[0] if len(bbox) > 0 else 0,
-                        "y": bbox[1] if len(bbox) > 1 else 0,
-                        "width": (bbox[2] - bbox[0]) if len(bbox) >= 3 else 0,
-                        "height": (bbox[3] - bbox[1]) if len(bbox) >= 4 else 0,
+                        "x1": x1,
+                        "y1": y1,
+                        "x2": x2,
+                        "y2": y2,
+                        "width": width,
+                        "height": height,
                     },
                     "is_violation": True,
                 })
