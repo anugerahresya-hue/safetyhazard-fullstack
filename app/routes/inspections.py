@@ -378,10 +378,6 @@ def detection_summary(detections, enriched_hazards=None):
         "risk_score":          risk["score"],
         "risk_band":           risk["band"],
     }
-        "env_hazards":         sorted(env),
-        "risk_score":          risk["score"],
-        "risk_band":           risk["band"],
-    }
 
 
 router = APIRouter()
