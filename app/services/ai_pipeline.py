@@ -55,23 +55,22 @@ def resize_image_if_needed(image_bytes: bytes, max_dimension: int = MAX_IMAGE_DI
 
 
 async def call_yolo_bytes(image_bytes: bytes, confidence: float = YOLO_CONFIDENCE) -> list:
-    """Deteksi dari bytes gambar langsung — untuk live camera (frame per frame).
+    """Deteksi dari bytes gambar langsung (tanpa download URL).
 
-    Selalu pakai /detect-sahi karena live camera kirim per-frame (bukan video utuh).
+    Selalu pakai /detect-sahi — endpoint SAHI memotong gambar jadi slice kecil
+    sehingga jauh lebih akurat mendeteksi objek kecil (helmet, vest, person
+    jauh) dibanding /detect standar. Dipakai baik oleh live-preview maupun
+    analisa penuh supaya keduanya konsisten & akurat.
+    
     Retry logic: 500 errors bisa sementara (YOLO service restart/overload).
     Image resizing: Downscale ke 1280px untuk mengurangi beban CPU YOLO service.
     """
-    # Kalau ternyata bytes-nya video (bukan frame), route ke detect-video
-    if _is_video_bytes(image_bytes):
-        print("[YOLO] call_yolo_bytes received video bytes — routing to /detect-video")
-        return await call_yolo_video_bytes(image_bytes, confidence)
-
     # Resize image untuk mengurangi beban YOLO service (running di CPU)
     image_bytes = resize_image_if_needed(image_bytes)
-
+    
     max_retries = 3
     retry_delay = 2  # seconds
-
+    
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -84,135 +83,37 @@ async def call_yolo_bytes(image_bytes: bytes, confidence: float = YOLO_CONFIDENC
                         "slice_size": YOLO_SLICE_SIZE,
                         "is_walking": True,
                         "lane_start": 0.2,
-                        "lane_end":   0.8,
+                        "lane_end": 0.8,
                     },
                 )
                 response.raise_for_status()
                 return response.json().get("detections", [])
         except httpx.HTTPStatusError as e:
+            # 500 errors could be transient, retry
             if e.response.status_code >= 500 and attempt < max_retries - 1:
                 import asyncio
                 await asyncio.sleep(retry_delay)
                 continue
+            # 4xx errors or final retry, raise
             raise
-        except httpx.RequestError:
+        except httpx.RequestError as e:
+            # Network errors, retry
             if attempt < max_retries - 1:
                 import asyncio
                 await asyncio.sleep(retry_delay)
                 continue
             raise
-
+    
+    # Should not reach here, but return empty if all retries fail
     return []
 
 
-async def call_yolo_video_bytes(video_bytes: bytes, confidence: float = YOLO_CONFIDENCE) -> list:
-    """Kirim video bytes ke YOLO /detect-video endpoint.
-
-    Params sesuai Swagger YOLO v2.0.0:
-      video         : multipart field (MP4/AVI/MOV)
-      confidence    : 0.25 default
-      frame_interval: 30 (proses 1 frame per 30 frame)
-      use_sahi      : false (lebih cepat untuk video)
-      is_walking    : true
-      lane_start    : 0.2
-      lane_end      : 0.8
-      max_frames    : 50
-    """
-    print(f"[YOLO] Sending {len(video_bytes)} bytes to /detect-video")
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        files = {"video": ("video.mp4", video_bytes, "video/mp4")}
-        response = await client.post(
-            f"{YOLO_SERVICE_URL}/detect-video",
-            files=files,
-            params={
-                "confidence":     confidence,
-                "frame_interval": 30,
-                "use_sahi":       False,
-                "is_walking":     True,
-                "lane_start":     0.2,
-                "lane_end":       0.8,
-                "max_frames":     50,
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        # /detect-video returns per-frame detections — flatten to single list
-        # Response format: {"frames": [{"frame": N, "detections": [...]}, ...]}
-        # or {"detections": [...]} for aggregated results
-        if "detections" in data:
-            return data["detections"]
-        elif "frames" in data:
-            # Flatten all frame detections into one list, deduplicated by label+bbox
-            all_detections = []
-            seen = set()
-            for frame in data["frames"]:
-                for det in frame.get("detections", []):
-                    key = (det.get("label"), str(det.get("bbox", [])))
-                    if key not in seen:
-                        seen.add(key)
-                        all_detections.append(det)
-            return all_detections
-        return []
-
-
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".webm", ".mkv"}
-
-
-def _is_video_url(url: str) -> bool:
-    """Check if URL points to a video file by extension."""
-    from pathlib import PurePosixPath
-    path = PurePosixPath(url.split("?")[0])  # strip query params
-    return path.suffix.lower() in VIDEO_EXTENSIONS
-
-
-def _is_video_bytes(data: bytes) -> bool:
-    """Check if bytes are a video by magic bytes signature."""
-    if len(data) < 12:
-        return False
-    # MP4/MOV: ftyp box
-    if data[4:8] in (b"ftyp", b"moov", b"mdat"):
-        return True
-    # AVI: RIFF....AVI
-    if data[:4] == b"RIFF" and data[8:11] == b"AVI":
-        return True
-    # WebM/MKV: EBML header
-    if data[:4] == b"\x1a\x45\xdf\xa3":
-        return True
-    return False
-
-
 async def call_yolo(image_url: str, confidence: float = YOLO_CONFIDENCE) -> list:
-    """Download file dari URL lalu kirim ke YOLO endpoint yang sesuai.
-
-    - Video (mp4/mov/avi)  → /detect-video  (field: video)
-    - Gambar (jpg/png/etc) → /detect-sahi   (field: image)
-    """
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        file_res = await client.get(image_url)
-        file_res.raise_for_status()
-        file_bytes = file_res.content
-
-    content_type = file_res.headers.get("content-type", "")
-    print(f"[YOLO] Downloaded {len(file_bytes)} bytes, content-type: {content_type}, url: {image_url[-60:]}")
-
-    # Guard: kalau dapat HTML (error page dari Supabase), jangan kirim ke YOLO
-    if file_bytes[:15].lower().lstrip().startswith(b"<!doctype") or file_bytes[:6] == b"<html>":
-        print("[YOLO] Got HTML response from Supabase — bucket may be private or file not found")
-        return []
-
-    # Route to correct YOLO endpoint
-    is_video = (
-        _is_video_url(image_url) or
-        "video" in content_type or
-        _is_video_bytes(file_bytes)
-    )
-
-    if is_video:
-        print("[YOLO] Routing to /detect-video")
-        return await call_yolo_video_bytes(file_bytes, confidence)
-    else:
-        print("[YOLO] Routing to /detect-sahi")
-        return await call_yolo_bytes(file_bytes, confidence)
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        img_res = await client.get(image_url)
+        img_res.raise_for_status()
+        image_bytes = img_res.content
+    return await call_yolo_bytes(image_bytes, confidence)
 
 
 async def call_ocr(image_url: str) -> str:

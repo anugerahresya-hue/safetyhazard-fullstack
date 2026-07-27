@@ -13,6 +13,7 @@ from app.models.hazard import Hazard
 from app.models.corrective_action import CorrectiveAction
 from app.services.ai_pipeline import call_yolo, call_yolo_bytes, call_rag, ENV_HAZARD_LABELS, run_full_pipeline
 from app.services.severity_rules import get_severity, compute_risk_score
+from app.services import email_service
 
 
 # ── Geometry & PPE inference helpers ───────────────────────────────
@@ -300,19 +301,21 @@ def detection_summary(detections, enriched_hazards=None):
     """
     Ringkasan untuk panel status frontend + skor risiko agregat.
 
-    `detections`      = deteksi MENTAH YOLO v2.0.0 (buat hitung jumlah orang/PPE items).
+    `detections`      = deteksi MENTAH YOLO (buat hitung jumlah orang/helmet/vest).
     `enriched_hazards`= hasil infer_ppe_violations (pelanggaran PPE per-orang +
                         hazard lingkungan dengan risk_level). Dipakai untuk
                         breakdown per-pekerja & skor risiko.
-    """
-    # YOLO v2.0.0 class names
-    HELMET_LABELS = {"safety_helmet"}
-    GLASSES_LABELS = {"safety_glasses"}
-    GLOVES_LABELS = {"safety_gloves"}
-    BOOTS_LABELS = {"safety_boots"}
-    APRON_LABELS = {"apron"}
 
-    person = helmet = glasses = gloves = boots = apron = 0
+    Kenapa keduanya: panel tidak cukup hanya tahu "ada pelanggaran atau tidak"
+    (biner). Dengan menghitung `no_helmet`/`no_safety_vest` per-orang dari
+    enriched_hazards + jumlah orang dari deteksi mentah, panel bisa lapor
+    "2 dari 5 pekerja tanpa helmet" dan menghitung risk score gabungan —
+    bukan sekadar Missing/Present untuk seluruh frame.
+    """
+    HELMET_LABELS = {"helmet", "hard_hat"}
+    VEST_LABELS = {"safety_vest", "vest"}
+
+    person = helmet = vest = 0
     if isinstance(detections, (list, tuple)):
         for d in detections:
             if not isinstance(d, dict):
@@ -322,37 +325,22 @@ def detection_summary(detections, enriched_hazards=None):
                 person += 1
             elif label in HELMET_LABELS:
                 helmet += 1
-            elif label in GLASSES_LABELS:
-                glasses += 1
-            elif label in GLOVES_LABELS:
-                gloves += 1
-            elif label in BOOTS_LABELS:
-                boots += 1
-            elif label in APRON_LABELS:
-                apron += 1
+            elif label in VEST_LABELS:
+                vest += 1
 
     # Breakdown pelanggaran per-orang + hazard lingkungan dari enriched_hazards.
     missing_helmet = 0
-    missing_glasses = 0
-    missing_gloves = 0
-    missing_boots = 0
-    missing_apron = 0
+    missing_vest = 0
     env = set()
     if isinstance(enriched_hazards, (list, tuple)):
         for h in enriched_hazards:
             if not isinstance(h, dict):
                 continue
             label = str(h.get("label") or h.get("yolo_label") or "").lower()
-            if label == "no_safety_helmet":
+            if label == "no_helmet":
                 missing_helmet += 1
-            elif label == "no_safety_glasses":
-                missing_glasses += 1
-            elif label == "no_safety_gloves":
-                missing_gloves += 1
-            elif label == "no_safety_boots":
-                missing_boots += 1
-            elif label == "no_apron":
-                missing_apron += 1
+            elif label == "no_safety_vest":
+                missing_vest += 1
             elif label in ENV_HAZARD_LABELS:
                 env.add(label)
 
@@ -361,19 +349,11 @@ def detection_summary(detections, enriched_hazards=None):
     return {
         "person_count":        person,
         "helmet_count":        helmet,
-        "glasses_count":       glasses,
-        "gloves_count":        gloves,
-        "boots_count":         boots,
-        "apron_count":         apron,
-        "vest_count":          0,  # Deprecated in YOLO v2.0.0
+        "vest_count":          vest,
         "has_person":          person > 0,
         # Berapa orang yang APD-nya tidak terpakai (hasil inferensi spasial).
         "workers_missing_helmet": missing_helmet,
-        "workers_missing_glasses": missing_glasses,
-        "workers_missing_gloves": missing_gloves,
-        "workers_missing_boots": missing_boots,
-        "workers_missing_apron": missing_apron,
-        "workers_missing_vest":   0,  # Deprecated
+        "workers_missing_vest":   missing_vest,
         "env_hazards":         sorted(env),
         "risk_score":          risk["score"],
         "risk_band":           risk["band"],
@@ -529,6 +509,27 @@ async def analyze_inspection(
     inspection.status = "analyzed"
     db.commit()
 
+    # Notifikasi email ke semua manager/admin kalau ada hazard critical.
+    # Dibungkus try/except supaya gagal kirim email tidak menggagalkan
+    # response analisa yang sudah berhasil.
+    critical_labels = [h["category"] for h in hazard_list if h["risk_level"] == "critical"]
+    if critical_labels:
+        try:
+            recipients = db.query(User).filter(
+                User.role.in_(["manager", "admin"]),
+                User.status == "active"
+            ).all()
+            for recipient in recipients:
+                email_service.send_critical_hazard(
+                    recipient.email,
+                    current_user.name,
+                    inspection.location,
+                    critical_labels,
+                    str(inspection.id),
+                )
+        except Exception as e:
+            print(f"[EMAIL ERROR] Failed to send critical hazard email: {e}")
+
     return {
         "inspection_id": str(inspection.id),
         "status": "analyzed",
@@ -624,131 +625,6 @@ async def live_preview(
             "required_ppe": get_area_config(area)["required_ppe"]
         }
     }
-
-
-@router.post("/{inspection_id}/analyze-frame")
-async def analyze_frame(
-    inspection_id: str,
-    image: UploadFile = File(...),
-    area: str = Form("spray_decoration"),
-    current_user: User = Depends(inspector_only),
-):
-    """
-    Analyze single video frame with bounding box coordinates for canvas overlay.
-    Used for real-time video playback with detection overlay.
-    """
-    from app.services.area_rules import get_area_config
-    
-    # Verify inspection ownership
-    db = next(get_db())
-    inspection = db.query(Inspection).filter(
-        Inspection.id == inspection_id,
-        Inspection.user_id == current_user.id
-    ).first()
-    
-    if not inspection:
-        raise HTTPException(status_code=404, detail="Inspection not found")
-    
-    # Read frame
-    image_bytes = await image.read()
-    
-    # Call YOLO detection
-    try:
-        raw_detections = await call_yolo_bytes(image_bytes)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"YOLO service error: {str(e)}")
-    
-    # Area-based PPE inference
-    enriched_hazards = infer_ppe_violations(raw_detections, area)
-    
-    # Format detections with full bbox for canvas drawing
-    detections_with_bbox = []
-    for det in raw_detections:
-        bbox = det.get("bbox", {})
-        label = det.get("label", "").lower()
-        
-        # Check if this is a violation based on enriched_hazards
-        is_violation = any(
-            h.get("label", "").lower() in [f"no_{label}", label.replace("_", " ")]
-            for h in enriched_hazards
-        )
-        
-        # Extract bbox values - YOLO returns dict with x1, y1, x2, y2, width, height
-        if isinstance(bbox, dict):
-            x1 = bbox.get("x1", 0)
-            y1 = bbox.get("y1", 0)
-            x2 = bbox.get("x2", 0)
-            y2 = bbox.get("y2", 0)
-            width = bbox.get("width", 0)
-            height = bbox.get("height", 0)
-        else:
-            # Fallback for list format [x1, y1, x2, y2]
-            x1 = bbox[0] if len(bbox) > 0 else 0
-            y1 = bbox[1] if len(bbox) > 1 else 0
-            x2 = bbox[2] if len(bbox) > 2 else 0
-            y2 = bbox[3] if len(bbox) > 3 else 0
-            width = x2 - x1
-            height = y2 - y1
-        
-        detections_with_bbox.append({
-            "label": label,
-            "confidence_score": det.get("confidence_score", 0),
-            "bbox": {
-                "x1": x1,
-                "y1": y1,
-                "x2": x2,
-                "y2": y2,
-                "width": width,
-                "height": height,
-            },
-            "is_violation": is_violation,
-        })
-    
-    # Add violation overlays (missing PPE)
-    for hazard in enriched_hazards:
-        if hazard.get("inferred"):  # PPE violations
-            bbox = hazard.get("bbox", [])
-            if bbox and len(bbox) >= 4:
-                x1 = bbox[0]
-                y1 = bbox[1]
-                x2 = bbox[2]
-                y2 = bbox[3]
-                width = x2 - x1
-                height = y2 - y1
-                
-                detections_with_bbox.append({
-                    "label": hazard.get("label", ""),
-                    "confidence_score": hazard.get("confidence", 0.9),
-                    "bbox": {
-                        "x1": x1,
-                        "y1": y1,
-                        "x2": x2,
-                        "y2": y2,
-                        "width": width,
-                        "height": height,
-                    },
-                    "is_violation": True,
-                })
-    
-    # Calculate risk score
-    risk = compute_risk_score(enriched_hazards)
-    
-    # Get summary
-    summary = detection_summary(raw_detections, enriched_hazards)
-    
-    return {
-        "detections": detections_with_bbox,
-        "risk_score": risk["score"],
-        "risk_band": risk["band"],
-        "compliance": summary,
-        "area_info": {
-            "area": area,
-            "display_name": get_area_config(area)["display_name"],
-            "required_ppe": get_area_config(area)["required_ppe"]
-        }
-    }
-
-
 @router.get("/")
 def list_inspections(
     current_user: User = Depends(get_current_user),

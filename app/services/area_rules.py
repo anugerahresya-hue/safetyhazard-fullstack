@@ -132,7 +132,7 @@ def check_ppe_compliance(
 def check_special_hazards(detections: list[dict], area: str) -> list[dict]:
     """
     Detect special hazards that require spatial or behavioural logic:
-      - phone_while_walking  (General area: phone detected + person present)
+      - phone_while_walking  (universal — semua area, bukan cuma "general")
       - trolley_out_of_lane  (Assembly area: trolley centre outside lane)
       - person_out_of_lane   (Assembly area: person centre outside lane)
 
@@ -147,19 +147,18 @@ def check_special_hazards(detections: list[dict], area: str) -> list[dict]:
 
     labels_present = {d.get("label", "").lower() for d in detections}
 
-    if key == "general":
-        # phone_while_walking: any phone detected when a person is also present
-        if "phone" in labels_present and "person" in labels_present:
-            for d in detections:
-                if d.get("label", "").lower() == "phone":
-                    hazards.append(_make_violation(
-                        "phone_while_walking",
-                        bbox=d.get("bbox", []),
-                        confidence=float(d.get("confidence_score", 0.90)),
-                        inferred=False,
-                    ))
+    # Universal — jalan di SEMUA area, bukan hanya saat area == "general"
+    if "phone" in labels_present and "person" in labels_present:
+        for d in detections:
+            if d.get("label", "").lower() == "phone":
+                hazards.append(_make_violation(
+                    "phone_while_walking",
+                    bbox=d.get("bbox", []),
+                    confidence=float(d.get("confidence_score", 0.90)),
+                    inferred=False,
+                ))
 
-    elif key == "assembly":
+    if key == "assembly":
         for d in detections:
             label = d.get("label", "").lower()
             bbox  = d.get("bbox", [])
@@ -167,10 +166,7 @@ def check_special_hazards(detections: list[dict], area: str) -> list[dict]:
                 continue
 
             x1, _y1, x2, _y2 = bbox
-            centre_x_fraction = (x1 + x2) / 2  # assumes bbox in pixel coords;
-            # if YOLO returns normalised [0-1] coords this is already correct.
-            # For pixel coords we'd need image width — use a safe heuristic:
-            # treat bbox values > 1 as pixel coords → normalise by 640 default.
+            centre_x_fraction = (x1 + x2) / 2
             if centre_x_fraction > 1:
                 centre_x_fraction = centre_x_fraction / 640.0
 
