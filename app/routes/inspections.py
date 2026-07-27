@@ -299,63 +299,53 @@ def infer_ppe_violations(detections, area=""):
 def detection_summary(detections, enriched_hazards=None):
     """
     Ringkasan untuk panel status frontend + skor risiko agregat.
-
-    `detections`      = deteksi MENTAH YOLO (buat hitung jumlah orang/helmet/vest).
-    `enriched_hazards`= hasil infer_ppe_violations (pelanggaran PPE per-orang +
-                        hazard lingkungan dengan risk_level). Dipakai untuk
-                        breakdown per-pekerja & skor risiko.
-
-    Kenapa keduanya: panel tidak cukup hanya tahu "ada pelanggaran atau tidak"
-    (biner). Dengan menghitung `no_helmet`/`no_safety_vest` per-orang dari
-    enriched_hazards + jumlah orang dari deteksi mentah, panel bisa lapor
-    "2 dari 5 pekerja tanpa helmet" dan menghitung risk score gabungan —
-    bukan sekadar Missing/Present untuk seluruh frame.
     """
-    HELMET_LABELS = {"helmet", "hard_hat"}
-    VEST_LABELS = {"safety_vest", "vest"}
-
-    person = helmet = vest = 0
+    person = 0
     if isinstance(detections, (list, tuple)):
         for d in detections:
             if not isinstance(d, dict):
                 continue
-            label = str(d.get("label", "")).lower()
-            if label == "person":
+            if str(d.get("label", "")).lower() == "person":
                 person += 1
-            elif label in HELMET_LABELS:
-                helmet += 1
-            elif label in VEST_LABELS:
-                vest += 1
 
-    # Breakdown pelanggaran per-orang + hazard lingkungan dari enriched_hazards.
-    missing_helmet = 0
-    missing_vest = 0
+    # Hitung pelanggaran per jenis PPE dari label ASLI yang dipakai app ini
+    missing_glasses = missing_gloves = missing_apron = 0
+    missing_helmet = missing_boots = 0
     env = set()
+
+    ENV_LABELS = {"blocked_walkway", "wet_floor", "exposed_cable", "fire_hazard", "spill", "missing_guardrail"}
+
     if isinstance(enriched_hazards, (list, tuple)):
         for h in enriched_hazards:
             if not isinstance(h, dict):
                 continue
             label = str(h.get("label") or h.get("yolo_label") or "").lower()
-            if label == "no_helmet":
+            if label == "no_safety_glasses":
+                missing_glasses += 1
+            elif label == "no_safety_gloves":
+                missing_gloves += 1
+            elif label == "no_apron":
+                missing_apron += 1
+            elif label == "no_safety_helmet":
                 missing_helmet += 1
-            elif label == "no_safety_vest":
-                missing_vest += 1
-            elif label in ENV_HAZARD_LABELS:
+            elif label in ("no_safety_boots", "no_safety_shoes"):
+                missing_boots += 1
+            elif label in ENV_LABELS:
                 env.add(label)
 
     risk = compute_risk_score(enriched_hazards or [])
 
     return {
-        "person_count":        person,
-        "helmet_count":        helmet,
-        "vest_count":          vest,
-        "has_person":          person > 0,
-        # Berapa orang yang APD-nya tidak terpakai (hasil inferensi spasial).
-        "workers_missing_helmet": missing_helmet,
-        "workers_missing_vest":   missing_vest,
-        "env_hazards":         sorted(env),
-        "risk_score":          risk["score"],
-        "risk_band":           risk["band"],
+        "person_count":             person,
+        "has_person":                person > 0,
+        "workers_missing_glasses":  missing_glasses,
+        "workers_missing_gloves":   missing_gloves,
+        "workers_missing_apron":    missing_apron,
+        "workers_missing_helmet":   missing_helmet,
+        "workers_missing_boots":    missing_boots,
+        "env_hazards":              sorted(env),
+        "risk_score":               risk["score"],
+        "risk_band":                risk["band"],
     }
 
 
