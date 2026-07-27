@@ -13,7 +13,6 @@ from app.models.hazard import Hazard
 from app.models.corrective_action import CorrectiveAction
 from app.services.ai_pipeline import call_yolo, call_yolo_bytes, call_rag, ENV_HAZARD_LABELS, run_full_pipeline
 from app.services.severity_rules import get_severity, compute_risk_score
-from app.services import email_service
 
 
 # ── Geometry & PPE inference helpers ───────────────────────────────
@@ -508,27 +507,6 @@ async def analyze_inspection(
     # Update inspection status
     inspection.status = "analyzed"
     db.commit()
-
-    # Notifikasi email ke semua manager/admin kalau ada hazard critical.
-    # Dibungkus try/except supaya gagal kirim email tidak menggagalkan
-    # response analisa yang sudah berhasil.
-    critical_labels = [h["category"] for h in hazard_list if h["risk_level"] == "critical"]
-    if critical_labels:
-        try:
-            recipients = db.query(User).filter(
-                User.role.in_(["manager", "admin"]),
-                User.status == "active"
-            ).all()
-            for recipient in recipients:
-                email_service.send_critical_hazard(
-                    recipient.email,
-                    current_user.name,
-                    inspection.location,
-                    critical_labels,
-                    str(inspection.id),
-                )
-        except Exception as e:
-            print(f"[EMAIL ERROR] Failed to send critical hazard email: {e}")
 
     return {
         "inspection_id": str(inspection.id),
