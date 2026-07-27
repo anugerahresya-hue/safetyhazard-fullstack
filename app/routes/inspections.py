@@ -13,7 +13,6 @@ from app.models.hazard import Hazard
 from app.models.corrective_action import CorrectiveAction
 from app.services.ai_pipeline import call_yolo, call_yolo_bytes, call_rag, ENV_HAZARD_LABELS, run_full_pipeline
 from app.services.severity_rules import get_severity, compute_risk_score
-from app.services import email_service
 
 
 # ── Geometry & PPE inference helpers ───────────────────────────────
@@ -85,10 +84,10 @@ def compute_iou(box_a, box_b):
 def infer_ppe_violations(detections, area=""):
     """
     Inferensi pelanggaran PPE per-orang dari deteksi mentah YOLO v2.0.0.
-    
+
     YOLO v2.0.0 classes: person, trolley, phone, apron, safety_glasses,
     safety_gloves, safety_boots, safety_helmet
-    
+
     Area-specific PPE requirements:
     - Spray/Decoration: safety_glasses, safety_gloves, apron
     - Central Staging: safety_helmet, safety_boots
@@ -96,9 +95,9 @@ def infer_ppe_violations(detections, area=""):
     - General/All: phone_while_walking
     """
     # YOLO v2.0.0 class names
-    PPE_CLASSES = {"person", "safety_helmet", "safety_glasses", "safety_gloves", 
+    PPE_CLASSES = {"person", "safety_helmet", "safety_glasses", "safety_gloves",
                    "safety_boots", "apron", "trolley", "phone"}
-    
+
     RISK_MAP = {
         "blocked_walkway":   "high",
         "wet_floor":         "medium",
@@ -107,15 +106,15 @@ def infer_ppe_violations(detections, area=""):
         "spill":             "medium",
         "missing_guardrail": "critical",
     }
-    
+
     PPE_IOU_THRESHOLD = 0.05  # For helmet, glasses, gloves, boots vs person top-half
     APRON_IOU_THRESHOLD = 0.10  # For apron vs person full bbox
     LANE_START = 0.2  # Lane boundary start (20% from left)
     LANE_END = 0.8    # Lane boundary end (80% from left)
-    
+
     if not isinstance(detections, (list, tuple)) or not detections:
         return []
-    
+
     # Separate detections by class
     persons = []
     helmets = []
@@ -126,12 +125,12 @@ def infer_ppe_violations(detections, area=""):
     trolleys = []
     phones = []
     other_hazards = []
-    
+
     for det in detections:
         if not isinstance(det, dict):
             continue
         label = str(det.get("label", "")).lower()
-        
+
         if label == "person":
             persons.append(det)
         elif label == "safety_helmet":
@@ -153,24 +152,24 @@ def infer_ppe_violations(detections, area=""):
             hazard = dict(det)
             hazard["risk_level"] = RISK_MAP.get(label, "medium")
             other_hazards.append(hazard)
-    
+
     output = other_hazards.copy()
-    
+
     # Area-specific PPE inference
     area_lower = area.lower() if area else ""
-    
+
     for person in persons:
         person_bbox = bbox_to_list(person.get("bbox"))
         if not person_bbox:
             continue
-        
+
         px1, py1, px2, py2 = person_bbox
         y_top, y_bot = min(py1, py2), max(py1, py2)
         x_left, x_right = min(px1, px2), max(px1, px2)
-        
+
         # Top half for helmet, glasses, gloves, boots
         top_half = [x_left, y_top, x_right, y_top + (y_bot - y_top) / 2.0]
-        
+
         # Spray/Decoration Area: glasses, gloves, apron
         if "spray" in area_lower or "decoration" in area_lower:
             wearing_glasses = any(
@@ -185,7 +184,7 @@ def infer_ppe_violations(detections, area=""):
                 compute_iou(a.get("bbox", []), person_bbox) >= APRON_IOU_THRESHOLD
                 for a in aprons
             )
-            
+
             if not wearing_glasses:
                 output.append({
                     "label": "no_safety_glasses",
@@ -213,7 +212,7 @@ def infer_ppe_violations(detections, area=""):
                     "risk_level": "high",
                     "inferred": True,
                 })
-        
+
         # Central Staging Area: helmet, safety_boots
         elif "central" in area_lower or "staging" in area_lower:
             wearing_helmet = any(
@@ -224,7 +223,7 @@ def infer_ppe_violations(detections, area=""):
                 compute_iou(b.get("bbox", []), top_half) >= PPE_IOU_THRESHOLD
                 for b in boots
             )
-            
+
             if not wearing_helmet:
                 output.append({
                     "label": "no_safety_helmet",
@@ -243,7 +242,7 @@ def infer_ppe_violations(detections, area=""):
                     "risk_level": "high",
                     "inferred": True,
                 })
-        
+
         # Assembly Area: check person lane violations
         elif "assembly" in area_lower:
             # Person should stay in side lanes (< 20% or > 80%)
@@ -259,18 +258,18 @@ def infer_ppe_violations(detections, area=""):
                     "risk_level": "high",
                     "inferred": False,
                 })
-    
+
     # Assembly Area: trolley lane violations
     if "assembly" in area_lower:
         for trolley in trolleys:
             trolley_bbox = bbox_to_list(trolley.get("bbox"))
             if not trolley_bbox:
                 continue
-            
+
             tx1, ty1, tx2, ty2 = trolley_bbox
             center_x = (tx1 + tx2) / 2.0
             image_width = max(tx2, 1.0)
-            
+
             # Trolley should stay in center lane (20%-80%)
             if (center_x / image_width) < LANE_START or (center_x / image_width) > LANE_END:
                 output.append({
@@ -281,7 +280,7 @@ def infer_ppe_violations(detections, area=""):
                     "risk_level": "high",
                     "inferred": False,
                 })
-    
+
     # Universal: phone_while_walking (all areas)
     if phones and persons:
         for phone in phones:
@@ -293,7 +292,7 @@ def infer_ppe_violations(detections, area=""):
                 "risk_level": "medium",
                 "inferred": False,
             })
-    
+
     return output
 
 
@@ -465,7 +464,7 @@ async def analyze_inspection(
         confidence = h.get("confidence_score", 1.0)
         risk_level = h.get("risk_level", "medium")
         ocr_text   = h.get("ocr_text", "")
-        
+
         corrective = h.get("corrective_action", {})
         action_description = corrective.get("action_description", "Refer to EHSS guidelines")
         priority = corrective.get("priority", "medium")
@@ -508,27 +507,6 @@ async def analyze_inspection(
     # Update inspection status
     inspection.status = "analyzed"
     db.commit()
-
-    # Notifikasi email ke semua manager/admin kalau ada hazard critical.
-    # Dibungkus try/except supaya gagal kirim email tidak menggagalkan
-    # response analisa yang sudah berhasil.
-    critical_labels = [h["category"] for h in hazard_list if h["risk_level"] == "critical"]
-    if critical_labels:
-        try:
-            recipients = db.query(User).filter(
-                User.role.in_(["manager", "admin"]),
-                User.status == "active"
-            ).all()
-            for recipient in recipients:
-                email_service.send_critical_hazard(
-                    recipient.email,
-                    current_user.name,
-                    inspection.location,
-                    critical_labels,
-                    str(inspection.id),
-                )
-        except Exception as e:
-            print(f"[EMAIL ERROR] Failed to send critical hazard email: {e}")
 
     return {
         "inspection_id": str(inspection.id),
@@ -577,7 +555,7 @@ async def live_preview(
     current_user: User = Depends(inspector_only),
 ):
     from app.services.area_rules import check_ppe_compliance, check_special_hazards, get_area_config
-    
+
     image_bytes = await image.read()
 
     # Deteksi langsung dari bytes lewat /detect-sahi (sama seperti analisa
@@ -594,20 +572,20 @@ async def live_preview(
     detected_labels = {d.get("label", "").lower() for d in raw_detections}
     person_detections = [d for d in raw_detections if d.get("label", "").lower() == "person"]
     person_count = len(person_detections)
-    
+
     # Gabungkan environmental hazards + missing PPE + special hazards
     enriched = []
-    
+
     # Environmental hazards
     for d in raw_detections:
         if d.get("label", "").lower() in ENV_HAZARD_LABELS:
             enriched.append(d)
-    
+
     # PPE violations (area-based)
     if person_count > 0:
         missing_ppe = check_ppe_compliance(detected_labels, area, person_count)
         enriched.extend(missing_ppe)
-    
+
     # Special hazards (phone usage, lane violations)
     special_hazards = check_special_hazards(raw_detections, area)
     enriched.extend(special_hazards)
@@ -625,6 +603,72 @@ async def live_preview(
             "required_ppe": get_area_config(area)["required_ppe"]
         }
     }
+
+
+# ── POST /inspections/{id}/analyze-frame ─────────────────────
+@router.post("/{inspection_id}/analyze-frame")
+async def analyze_frame(
+    inspection_id: str,
+    image: UploadFile = File(...),
+    area: str = Form("spray_decoration"),
+    current_user: User = Depends(inspector_only),
+    db: Session = Depends(get_db),
+):
+    """
+    Analisa 1 frame video yang sudah diasosiasikan dengan sebuah inspection
+    (dibuat via POST /inspections/). Dipanggil berulang kali (tiap ~2 detik)
+    oleh VideoAnalyzer.tsx selama pemutaran video.
+
+    Response cocok dengan AnalyzeFrameResponse di frontend:
+    { detections, risk_score, risk_band, compliance }
+    """
+    from app.services.area_rules import check_ppe_compliance, check_special_hazards, get_area_config
+
+    # Pastikan inspection ada & milik user ini
+    inspection = db.query(Inspection).filter(
+        Inspection.id == inspection_id,
+        Inspection.user_id == current_user.id
+    ).first()
+    if not inspection:
+        raise HTTPException(status_code=404, detail="Inspection not found")
+
+    image_bytes = await image.read()
+
+    try:
+        raw_detections = await call_yolo_bytes(image_bytes)
+    except Exception:
+        raw_detections = []
+
+    detected_labels = {d.get("label", "").lower() for d in raw_detections}
+    person_detections = [d for d in raw_detections if d.get("label", "").lower() == "person"]
+    person_count = len(person_detections)
+
+    enriched = []
+
+    # Environmental hazards
+    for d in raw_detections:
+        if d.get("label", "").lower() in ENV_HAZARD_LABELS:
+            enriched.append(d)
+
+    # PPE violations (area-based)
+    if person_count > 0:
+        missing_ppe = check_ppe_compliance(detected_labels, area, person_count)
+        enriched.extend(missing_ppe)
+
+    # Special hazards (phone usage, lane violations)
+    special_hazards = check_special_hazards(raw_detections, area)
+    enriched.extend(special_hazards)
+
+    risk = compute_risk_score(enriched)
+
+    return {
+        "detections": build_preview_boxes(raw_detections, area),
+        "risk_score": risk["score"],
+        "risk_band": risk["band"],
+        "compliance": detection_summary(raw_detections, enriched),
+    }
+
+
 @router.get("/")
 def list_inspections(
     current_user: User = Depends(get_current_user),
