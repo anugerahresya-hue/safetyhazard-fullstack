@@ -624,6 +624,107 @@ async def live_preview(
             "required_ppe": get_area_config(area)["required_ppe"]
         }
     }
+
+
+@router.post("/{inspection_id}/analyze-frame")
+async def analyze_frame(
+    inspection_id: str,
+    image: UploadFile = File(...),
+    area: str = Form("spray_decoration"),
+    current_user: User = Depends(inspector_only),
+):
+    """
+    Analyze single video frame with bounding box coordinates for canvas overlay.
+    Used for real-time video playback with detection overlay.
+    """
+    from app.services.area_rules import get_area_config
+    
+    # Verify inspection ownership
+    db = next(get_db())
+    inspection = db.query(Inspection).filter(
+        Inspection.id == inspection_id,
+        Inspection.user_id == current_user.id
+    ).first()
+    
+    if not inspection:
+        raise HTTPException(status_code=404, detail="Inspection not found")
+    
+    # Read frame
+    image_bytes = await image.read()
+    
+    # Call YOLO detection
+    try:
+        raw_detections = await call_yolo_bytes(image_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"YOLO service error: {str(e)}")
+    
+    # Area-based PPE inference
+    enriched_hazards = infer_ppe_violations(raw_detections, area)
+    
+    # Format detections with full bbox for canvas drawing
+    detections_with_bbox = []
+    for det in raw_detections:
+        bbox = det.get("bbox", {})
+        label = det.get("label", "").lower()
+        
+        # Check if this is a violation based on enriched_hazards
+        is_violation = any(
+            h.get("label", "").lower() in [f"no_{label}", label.replace("_", " ")]
+            for h in enriched_hazards
+        )
+        
+        detections_with_bbox.append({
+            "label": label,
+            "confidence_score": det.get("confidence_score", 0),
+            "bbox": {
+                "x": bbox.get("x1", 0) if isinstance(bbox, dict) else (bbox[0] if bbox else 0),
+                "y": bbox.get("y1", 0) if isinstance(bbox, dict) else (bbox[1] if bbox else 0),
+                "width": bbox.get("width", 0) if isinstance(bbox, dict) else (
+                    (bbox[2] - bbox[0]) if len(bbox) >= 4 else 0
+                ),
+                "height": bbox.get("height", 0) if isinstance(bbox, dict) else (
+                    (bbox[3] - bbox[1]) if len(bbox) >= 4 else 0
+                ),
+            },
+            "is_violation": is_violation,
+        })
+    
+    # Add violation overlays (missing PPE)
+    for hazard in enriched_hazards:
+        if hazard.get("inferred"):  # PPE violations
+            bbox = hazard.get("bbox", [])
+            if bbox:
+                detections_with_bbox.append({
+                    "label": hazard.get("label", ""),
+                    "confidence_score": hazard.get("confidence", 0.9),
+                    "bbox": {
+                        "x": bbox[0] if len(bbox) > 0 else 0,
+                        "y": bbox[1] if len(bbox) > 1 else 0,
+                        "width": (bbox[2] - bbox[0]) if len(bbox) >= 3 else 0,
+                        "height": (bbox[3] - bbox[1]) if len(bbox) >= 4 else 0,
+                    },
+                    "is_violation": True,
+                })
+    
+    # Calculate risk score
+    risk = compute_risk_score(enriched_hazards)
+    
+    # Get summary
+    summary = detection_summary(raw_detections, enriched_hazards)
+    
+    return {
+        "detections": detections_with_bbox,
+        "risk_score": risk["score"],
+        "risk_band": risk["band"],
+        "compliance": summary,
+        "area_info": {
+            "area": area,
+            "display_name": get_area_config(area)["display_name"],
+            "required_ppe": get_area_config(area)["required_ppe"]
+        }
+    }
+
+
 @router.get("/")
 def list_inspections(
     current_user: User = Depends(get_current_user),
