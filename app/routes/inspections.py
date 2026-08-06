@@ -11,7 +11,7 @@ from app.models.user import User
 from app.models.inspection import Inspection
 from app.models.hazard import Hazard
 from app.models.corrective_action import CorrectiveAction
-from app.services.ai_pipeline import call_yolo, call_yolo_bytes, call_rag, ENV_HAZARD_LABELS, run_full_pipeline
+from app.services.ai_pipeline import call_yolo, call_yolo_bytes, call_rag, ENV_HAZARD_LABELS, run_full_pipeline, get_analysis_dimensions
 from app.services.severity_rules import get_severity, compute_risk_score
 
 
@@ -510,29 +510,24 @@ def build_preview_boxes(detections, area=""):
     """
     Ubah deteksi mentah YOLO menjadi kotak siap-gambar untuk frontend.
 
-    - Hazard lingkungan + pelanggaran PPE hasil inferensi (area-specific) → danger=True (merah).
-    - Deteksi mentah person/PPE items TIDAK ikut (difilter oleh
-      infer_ppe_violations), jadi overlay hanya menampilkan yang BENAR-BENAR
-      hazard. Kalau tidak ada hazard → list kosong (box hilang).
+    Mengembalikan SEMUA deteksi (raw YOLO: person, safety_helmet, dll) +
+    violations hasil inferensi PPE. Raw deteksi di-flag is_violation=False
+    (warna class), violations di-flag is_violation=True (merah).
 
     Setiap kotak: {label, confidence_score, is_violation, bbox:{x1,y1,x2,y2,width,height}}.
-    bbox dinormalisasi ke dict dengan format yang frontend harapkan.
     """
-    enriched = infer_ppe_violations(detections, area)
+    violations = infer_ppe_violations(detections, area)
     boxes = []
-    for d in enriched:
-        bbox = bbox_to_list(d.get("bbox"))
-        if not bbox or len(bbox) < 4:
-            continue
-        x1, y1, x2, y2 = bbox
-        label = d.get("label") or d.get("yolo_label") or ""
-        confidence = d.get("confidence")
-        if confidence is None:
-            confidence = d.get("confidence_score", 0.0)
-        boxes.append({
-            "label":           label.replace("_", " "),
-            "confidence_score": confidence,
-            "is_violation":    True,  # infer_ppe_violations hanya keluarkan hazard
+
+    def _to_box(label, confidence, is_violation, bbox):
+        b = bbox_to_list(bbox)
+        if not b or len(b) < 4:
+            return None
+        x1, y1, x2, y2 = b
+        return {
+            "label":            label,
+            "confidence_score": float(confidence or 0.0),
+            "is_violation":     is_violation,
             "bbox": {
                 "x1": x1,
                 "y1": y1,
@@ -541,7 +536,28 @@ def build_preview_boxes(detections, area=""):
                 "width": x2 - x1,
                 "height": y2 - y1,
             },
-        })
+        }
+
+    # Semua raw deteksi YOLO — tampilkan bbox untuk person, PPE, dll
+    for d in detections:
+        label = str(d.get("label", "")).lower()
+        confidence = d.get("confidence")
+        if confidence is None:
+            confidence = d.get("confidence_score", 0.0)
+        box = _to_box(label, confidence, False, d.get("bbox"))
+        if box:
+            boxes.append(box)
+
+    # Violations hasil inferensi — flag merah
+    for v in violations:
+        label = (v.get("label") or v.get("yolo_label") or "").replace("_", " ")
+        confidence = v.get("confidence")
+        if confidence is None:
+            confidence = v.get("confidence_score", 0.0)
+        box = _to_box(label, confidence, True, v.get("bbox"))
+        if box:
+            boxes.append(box)
+
     return boxes
 
 
@@ -570,6 +586,15 @@ async def live_preview(
     person_detections = [d for d in raw_detections if d.get("label", "").lower() == "person"]
     person_count = len(person_detections)
 
+    # Jika YOLO tidak mendeteksi "person" tapi ada item PPE (helmet, boots,
+    # glasses, gloves, apron) — item PPE hanya muncul di atas orang, jadi
+    # anggap ada minimal 1 pekerja. Tanpa ini, PPE violations tidak pernah
+    # di-generate dan risk selalu "safe" padahal ada pelanggaran.
+    PPE_ITEM_LABELS = {"safety_helmet", "safety_glasses", "safety_gloves", "safety_boots", "apron"}
+    if person_count == 0 and detected_labels.intersection(PPE_ITEM_LABELS):
+        person_count = 1
+        person_detections = [{"label": "person", "confidence": 1.0, "confidence_score": 1.0, "bbox": [0, 0, 0, 0]}]
+
     # Gabungkan environmental hazards + missing PPE + special hazards
     enriched = []
 
@@ -591,8 +616,12 @@ async def live_preview(
     # frontend tinggal menggambar; box hanya muncul saat ada hazard nyata.
     # `summary` memberi tahu panel apakah ada orang di frame + breakdown PPE
     # per-pekerja + risk score gabungan.
+    _frame_w, _frame_h = get_analysis_dimensions(image_bytes)
+
     return {
         "detections": build_preview_boxes(raw_detections, area),
+        "frame_width": _frame_w,
+        "frame_height": _frame_h,
         "summary": detection_summary(raw_detections, enriched),
         "area_info": {
             "area": area,
@@ -640,6 +669,15 @@ async def analyze_frame(
     person_detections = [d for d in raw_detections if d.get("label", "").lower() == "person"]
     person_count = len(person_detections)
 
+    # Jika YOLO tidak mendeteksi "person" tapi ada item PPE (helmet, boots,
+    # glasses, gloves, apron) — item PPE hanya muncul di atas orang, jadi
+    # anggap ada minimal 1 pekerja. Tanpa ini, PPE violations tidak pernah
+    # di-generate dan risk selalu "safe" padahal ada pelanggaran.
+    PPE_ITEM_LABELS = {"safety_helmet", "safety_glasses", "safety_gloves", "safety_boots", "apron"}
+    if person_count == 0 and detected_labels.intersection(PPE_ITEM_LABELS):
+        person_count = 1
+        person_detections = [{"label": "person", "confidence": 1.0, "confidence_score": 1.0, "bbox": [0, 0, 0, 0]}]
+
     enriched = []
 
     # Environmental hazards
@@ -658,8 +696,12 @@ async def analyze_frame(
 
     risk = compute_risk_score(enriched)
 
+    _frame_w, _frame_h = get_analysis_dimensions(image_bytes)
+
     return {
         "detections": build_preview_boxes(raw_detections, area),
+        "frame_width": _frame_w,
+        "frame_height": _frame_h,
         "risk_score": risk["score"],
         "risk_band": risk["band"],
         "compliance": detection_summary(raw_detections, enriched),

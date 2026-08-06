@@ -174,6 +174,23 @@ def normalise_detection(raw: dict) -> dict:
     }
 
 
+def get_analysis_dimensions(image_bytes: bytes) -> tuple:
+    """
+    Kembalikan (width, height) gambar yang dikirim ke YOLO SETELAH resize.
+    Koordinat bbox dari YOLO selalu dalam skala dimensi ini — frontend
+    perlu tahu untuk menghitung scale factor ke ukuran canvas/video asli.
+    """
+    try:
+        img = Image.open(BytesIO(image_bytes))
+        w, h = img.width, img.height
+        ratio = min(MAX_IMAGE_DIMENSION / w, MAX_IMAGE_DIMENSION / h)
+        if ratio < 1:
+            return int(w * ratio), int(h * ratio)
+        return w, h
+    except Exception:
+        return 0, 0
+
+
 async def run_full_pipeline(image_url: str, area: str = "spray_decoration") -> tuple:
     """
     Return tuple: (raw_detections, enriched_hazards)
