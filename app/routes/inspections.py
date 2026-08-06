@@ -515,25 +515,32 @@ def build_preview_boxes(detections, area=""):
       infer_ppe_violations), jadi overlay hanya menampilkan yang BENAR-BENAR
       hazard. Kalau tidak ada hazard → list kosong (box hilang).
 
-    Setiap kotak: {label, confidence, danger, bbox:[x1,y1,x2,y2]}.
-    bbox dinormalisasi ke list; kotak tanpa bbox valid dibuang (tak bisa
-    digambar).
+    Setiap kotak: {label, confidence_score, is_violation, bbox:{x1,y1,x2,y2,width,height}}.
+    bbox dinormalisasi ke dict dengan format yang frontend harapkan.
     """
     enriched = infer_ppe_violations(detections, area)
     boxes = []
     for d in enriched:
         bbox = bbox_to_list(d.get("bbox"))
-        if not bbox:
+        if not bbox or len(bbox) < 4:
             continue
+        x1, y1, x2, y2 = bbox
         label = d.get("label") or d.get("yolo_label") or ""
         confidence = d.get("confidence")
         if confidence is None:
             confidence = d.get("confidence_score", 0.0)
         boxes.append({
-            "label":      label.replace("_", " "),
-            "confidence": confidence,
-            "danger":     True,  # infer_ppe_violations hanya keluarkan hazard
-            "bbox":       bbox,
+            "label":           label.replace("_", " "),
+            "confidence_score": confidence,
+            "is_violation":    True,  # infer_ppe_violations hanya keluarkan hazard
+            "bbox": {
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+                "width": x2 - x1,
+                "height": y2 - y1,
+            },
         })
     return boxes
 
