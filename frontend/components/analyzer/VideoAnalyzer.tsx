@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import { getClientToken } from "@/lib/auth";
 import type { DetectionBox, DetectionSummary } from "./HazardResultPanel";
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://safetyhazard-backend-production.up.railway.app";
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://web-production-07c27.up.railway.app";
 
 // ── Area config ───────────────────────────────────────────
 const AREAS = [
@@ -61,6 +61,8 @@ export function VideoAnalyzer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const intervalRef  = useRef<NodeJS.Timeout | null>(null);
   const analyzeRef   = useRef<() => Promise<void>>(() => Promise.resolve());
+  const finalizingRef = useRef(false);
+  const frameCountRef = useRef(0);
 
   const [localArea, setLocalArea]     = useState("spray_decoration");
   const area = areaProp ?? localArea;
@@ -76,6 +78,8 @@ export function VideoAnalyzer({
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [pdfError, setPdfError]       = useState<string | null>(null);
   const [frameCount, setFrameCount]   = useState(0);
+  const [finalizing, setFinalizing]   = useState(false);
+  const [reportId, setReportId]       = useState<string | null>(null);
 
   const handleAreaChange = (val: string) => {
     setLocalArea(val);
@@ -182,7 +186,10 @@ export function VideoAnalyzer({
         onDetections?.(boxes);
         onSummary?.(response.data.compliance);
         drawDetections(response.data.detections, response.data.frame_width, response.data.frame_height);
-        setFrameCount((n) => n + 1);
+        setFrameCount((n) => {
+          frameCountRef.current = n + 1;
+          return n + 1;
+        });
       }
     } catch (err) {
       console.error("Frame analysis error:", err);
@@ -211,6 +218,7 @@ export function VideoAnalyzer({
     setError(null);
     setSaved(false);
     setPdfError(null);
+    setReportId(null);
     setFrameCount(0);
     setVideoFile(file);
     const videoUrl = URL.createObjectURL(file);
@@ -285,15 +293,62 @@ export function VideoAnalyzer({
     intervalRef.current = setInterval(() => analyzeRef.current(), 2000);
   };
 
-  // ── Stop analysis ─────────────────────────────────────
-  const stopAnalysis = () => {
-    setIsAnalyzing(false);
-    setSaved(true);
+  // ── Stop analysis + auto-finalize (save + report) ────
+  const stopLoop = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
-  };
+  }, []);
+
+  const autoFinalize = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video || !inspectionId || finalizingRef.current) return;
+    finalizingRef.current = true;
+    setFinalizing(true);
+    try {
+      // Ambil frame terakhir sebagai snapshot untuk report
+      const off = document.createElement("canvas");
+      off.width  = video.videoWidth  || 1280;
+      off.height = video.videoHeight || 720;
+      const ctx = off.getContext("2d");
+      if (ctx) ctx.drawImage(video, 0, 0, off.width, off.height);
+      const blob = await new Promise<Blob | null>((resolve) => {
+        off.toBlob((b) => resolve(b), "image/jpeg", 0.85);
+      });
+      if (!blob) throw new Error("Failed to capture frame");
+
+      const formData = new FormData();
+      formData.append("image", blob, "final_frame.jpg");
+      formData.append("area", area);
+
+      const res = await api.post<{
+        report_id: string;
+        hazards?: { yolo_label: string; risk_level: string }[];
+      }>(`/inspections/${inspectionId}/finalize`, formData);
+
+      if (res.ok && res.data?.report_id) {
+        setReportId(res.data.report_id);
+        setSaved(true);
+        setPdfError(null);
+      } else {
+        setPdfError((res.data as { detail?: string })?.detail || "Failed to auto-save report.");
+      }
+    } catch (err) {
+      console.error("Auto-finalize error:", err);
+      setPdfError("Failed to auto-save report.");
+    } finally {
+      setFinalizing(false);
+      finalizingRef.current = false;
+    }
+  }, [inspectionId, area]);
+
+  const stopAnalysis = useCallback(() => {
+    setIsAnalyzing(false);
+    stopLoop();
+    // Auto-simpan hasil + generate report setelah analisa berhenti
+    if (frameCountRef.current > 0) autoFinalize();
+  }, [stopLoop, autoFinalize]);
 
   // ── Generate PDF ──────────────────────────────────────
   const generatePdf = async () => {
@@ -322,8 +377,8 @@ export function VideoAnalyzer({
 
   // ── Clear video ───────────────────────────────────────
   const clearVideo = () => {
-    stopAnalysis();
     setIsAnalyzing(false);
+    stopLoop();
     if (videoSrc) URL.revokeObjectURL(videoSrc);
     setVideoSrc(null);
     setVideoFile(null);
@@ -332,6 +387,7 @@ export function VideoAnalyzer({
     setSaved(false);
     setFrameCount(0);
     setPdfError(null);
+    setReportId(null);
     if (videoRef.current) videoRef.current.pause();
     onDetections?.(undefined);
     onSummary?.(undefined);
@@ -389,10 +445,10 @@ export function VideoAnalyzer({
             <video
               ref={videoRef}
               src={videoSrc}
-              loop
               className="absolute inset-0 size-full object-contain"
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}
+              onEnded={() => { setIsPlaying(false); stopAnalysis(); }}
             />
             <canvas
               ref={canvasRef}
@@ -446,22 +502,24 @@ export function VideoAnalyzer({
         <div className="mt-3 space-y-2 rounded-lg bg-green-500/10 px-3 py-3">
           <p className="flex items-center gap-1.5 text-sm text-green-600 dark:text-green-500">
             <CheckCircle2 className="size-4" />
-            {saved 
-              ? `Analysis complete — ${frameCount} frames analyzed. See it in Reports.`
-              : `${frameCount} frame${frameCount > 1 ? 's' : ''} analyzed so far...`
+            {saved
+              ? `Analysis complete — ${frameCount} frames analyzed. Report saved automatically.`
+              : finalizing
+                ? "Saving report automatically..."
+                : `${frameCount} frame${frameCount > 1 ? 's' : ''} analyzed so far...`
             }
           </p>
           {pdfError && <p className="text-xs text-brand">{pdfError}</p>}
           <button
             onClick={generatePdf}
-            disabled={generatingPdf}
+            disabled={generatingPdf || finalizing}
             className={cn(
               "flex items-center gap-2 rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-600",
               "disabled:cursor-not-allowed disabled:opacity-50"
             )}
           >
             {generatingPdf ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />}
-            {generatingPdf ? "Generating PDF..." : "Generate PDF Report"}
+            {generatingPdf ? "Generating PDF..." : saved ? "Download PDF" : "Generate PDF Report"}
           </button>
         </div>
       )}
@@ -471,21 +529,24 @@ export function VideoAnalyzer({
         <div className="mt-4 flex flex-wrap gap-3">
           <button
             onClick={togglePlay}
-            className="flex items-center gap-2 rounded-lg bg-foreground/10 px-4 py-2 text-sm font-semibold transition-colors hover:bg-foreground/20"
+            disabled={finalizing}
+            className="flex items-center gap-2 rounded-lg bg-foreground/10 px-4 py-2 text-sm font-semibold transition-colors hover:bg-foreground/20 disabled:opacity-50"
           >
             {isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
             {isPlaying ? "Pause" : "Play"}
           </button>
           <button
             onClick={isAnalyzing ? stopAnalysis : startAnalysis}
-            disabled={!inspectionId}
+            disabled={!inspectionId || finalizing}
             className={cn(
               "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white transition-colors",
               isAnalyzing ? "bg-amber-600 hover:bg-amber-700" : "bg-brand hover:bg-brand-600",
               "disabled:cursor-not-allowed disabled:opacity-50"
             )}
           >
-            {isAnalyzing ? (
+            {finalizing ? (
+              <><Loader2 className="size-4 animate-spin" /> Saving Report...</>
+            ) : isAnalyzing ? (
               <><Loader2 className="size-4 animate-spin" /> Stop Analysis</>
             ) : (
               "Start Analysis"

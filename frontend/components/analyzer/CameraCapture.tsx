@@ -163,6 +163,7 @@ export function CameraCapture({
   // ID report terakhir yang tergenerate (dipakai kalau ingin unduh ulang).
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
+  const [reportId, setReportId] = useState<string | null>(null);
   const [fps, setFps] = useState(0);
   const [objectCount, setObjectCount] = useState(0);
 
@@ -482,10 +483,33 @@ export function CameraCapture({
       onSummary?.(analyzed.data?.summary ?? null);
       setInspectionId(inspectionId);
       setSaved(true);
+
+      // Auto-generate report otomatis setelah deteksi tersimpan, supaya
+      // hasil langsung masuk ke halaman Reports tanpa klik tambahan.
+      autoGenerateReport(inspectionId);
     } catch {
       setSaveError("Something went wrong while analyzing. Please try again.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Auto-generate PDF report (tanpa download) untuk inspection yang baru
+  // dianalisa. Dipanggil otomatis setelah save+analyze berhasil.
+  const autoGenerateReport = async (id: string) => {
+    setPdfError(null);
+    try {
+      const gen = await api.post<{ report_id: string }>(`/reports/generate/${id}`);
+      if (!gen.ok || !gen.data?.report_id) {
+        setPdfError(
+          (gen.data as { detail?: string })?.detail ||
+            "Failed to generate the report."
+        );
+        return;
+      }
+      setReportId(gen.data.report_id);
+    } catch {
+      // Non-fatal: report sudah disimpan, tombol Generate PDF tetap tersedia.
     }
   };
 
@@ -661,7 +685,9 @@ export function CameraCapture({
             <div className="space-y-3 rounded-lg bg-green-500/10 px-3 py-3">
               <p className="flex items-center gap-1.5 text-sm text-green-600 dark:text-green-500">
                 <CheckCircle2 className="size-4" />
-                Inspection saved and analyzed. See it in Reports.
+                {reportId
+                  ? "Inspection saved and report generated automatically. See it in Reports."
+                  : "Inspection saved and analyzed. See it in Reports."}
               </p>
               {inspectionId && (
                 <button
@@ -678,7 +704,7 @@ export function CameraCapture({
                   ) : (
                     <FileText className="size-4" />
                   )}
-                  {generatingPdf ? "Generating PDF..." : "Generate PDF Report"}
+                  {generatingPdf ? "Generating PDF..." : "Download PDF Report"}
                 </button>
               )}
             </div>
