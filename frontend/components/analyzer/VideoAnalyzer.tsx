@@ -126,9 +126,7 @@ export function VideoAnalyzer({
       const pw  = (bx2 - bx1) * scaleX;
       const ph  = (by2 - by1) * scaleY;
 
-      const color = det.is_violation
-        ? "#EF4444"
-        : CLASS_COLORS[det.label] ?? "rgba(200, 200, 200, 0.9)";
+      const color = det.is_violation ? "#EF4444" : "#22C55E";
       const label = `${det.label} ${Math.round(det.confidence_score * 100)}%`;
 
       ctx.strokeStyle = color;
@@ -288,9 +286,9 @@ export function VideoAnalyzer({
     setIsAnalyzing(true);
     setSaved(false);
 
-    // Analyze immediately then every 2 seconds
+    // Analyze immediately then every 3 seconds
     analyzeRef.current();
-    intervalRef.current = setInterval(() => analyzeRef.current(), 2000);
+    intervalRef.current = setInterval(() => analyzeRef.current(), 3000);
   };
 
   // ── Stop analysis + auto-finalize (save + report) ────
@@ -460,7 +458,7 @@ export function VideoAnalyzer({
             {isAnalyzing && (
               <div className="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-full bg-black/60 px-3 py-1 text-xs text-white backdrop-blur-sm">
                 <span className="h-2 w-2 animate-pulse rounded-full bg-red-500" />
-                Analyzing every 2s
+                Analyzing every 3s
               </div>
             )}
             <button
