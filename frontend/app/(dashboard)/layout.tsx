@@ -1,4 +1,5 @@
 import { Sidebar } from "@/components/layout/Sidebar";
+import { DashboardHeader } from "@/components/layout/DashboardHeader";
 import { getActiveRole } from "@/lib/session";
 
 /**
@@ -18,7 +19,10 @@ export default async function DashboardLayout({
     <div className="flex h-screen overflow-hidden bg-background">
       <Sidebar role={role} />
       <main className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-7xl px-6 py-6">{children}</div>
+        <div className="mx-auto max-w-7xl px-6 py-6">
+          <DashboardHeader />
+          {children}
+        </div>
       </main>
     </div>
   );

@@ -2,7 +2,7 @@
 
 import { getClientToken, clearSession } from "@/lib/auth";
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL;
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://web-production-07c27.up.railway.app";
 
 interface ApiResult<T = any> {
   data: T;

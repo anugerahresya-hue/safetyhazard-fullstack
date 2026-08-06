@@ -20,7 +20,7 @@ import { Logo } from "@/components/layout/Logo";
 import { AuthTabs } from "@/app/(auth)/login/page";
 import { cn } from "@/lib/utils";
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL;
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://web-production-07c27.up.railway.app";
 
 /**
  * Halaman Request Access (Register) — tata letak terpusat serasi dengan Sign In.

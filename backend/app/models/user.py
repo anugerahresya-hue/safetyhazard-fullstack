@@ -12,7 +12,9 @@ class User(Base):
     email         = Column(String(255), nullable=False, unique=True)
     password_hash = Column(String(255), nullable=False)
     role          = Column(String(20), nullable=False)       # inspector / manager / admin
-    status        = Column(String(20), default="pending")   # pending / active / inactive
+    status        = Column(String(20), default="pending")
+    employee_id   = Column(String(50))
+    department    = Column(String(100))   # pending / active / inactive
     created_at    = Column(DateTime(timezone=True), server_default=func.now())
     updated_at    = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

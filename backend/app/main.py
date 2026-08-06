@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from app.routes import auth, inspections, reports, dashboard, admin
+from app.routes import auth, inspections, reports, dashboard, admin, knowledge
 
 load_dotenv()
 
@@ -27,6 +27,7 @@ app.include_router(inspections.router, prefix="/inspections", tags=["Inspections
 app.include_router(reports.router, prefix="/reports", tags=["Reports"])
 app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
 app.include_router(admin.router, prefix="/admin", tags=["Admin"])
+app.include_router(knowledge.router, prefix="/knowledge", tags=["Knowledge"])
 
 @app.get("/")
 def root():

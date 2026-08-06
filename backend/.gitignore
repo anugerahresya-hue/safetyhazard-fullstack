@@ -26,3 +26,5 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+get_gmail_refresh_token.py

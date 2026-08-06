@@ -41,15 +41,37 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> User:
-    token = credentials.credentials
-    payload = decode_token(token)
-    if not payload:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+    try:
+        token = credentials.credentials
+        payload = decode_token(token)
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                detail="Invalid or expired token. Please log out and log back in."
+            )
 
-    user = db.query(User).filter(User.email == payload.get("sub")).first()
-    if not user or user.status != "active":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
-    return user
+        user = db.query(User).filter(User.email == payload.get("sub")).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                detail="User not found. Please log out and log back in."
+            )
+        
+        if user.status != "active":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="Your account is pending approval or has been deactivated."
+            )
+        
+        return user
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Authentication error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, 
+            detail="Authentication failed. Please log out and log back in."
+        )
 
 def require_role(*roles: str):
     def checker(current_user: User = Depends(get_current_user)):

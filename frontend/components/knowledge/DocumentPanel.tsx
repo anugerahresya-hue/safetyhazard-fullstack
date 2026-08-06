@@ -4,7 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { UploadCloud, FileText, X, Eye, Check, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { getClientToken } from "@/lib/auth";
 import type { UserRole } from "@/lib/session";
+
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://web-production-07c27.up.railway.app";
 
 type KbDoc = {
   id: string;
@@ -98,6 +101,29 @@ export function DocumentPanel({ role }: { role: UserRole }) {
     if (!ok) {
       setDocs(prev); // rollback
       setError("Failed to delete document.");
+    }
+  };
+
+  // Buka PDF lewat backend (stream berautentikasi). Bucket 'ehss-docs' privat,
+  // jadi tidak bisa dibuka langsung via URL publik Supabase.
+  const viewDoc = async (id: string) => {
+    setSelectedId(id);
+    setError(null);
+    try {
+      const res = await fetch(`${BASE_URL}/admin/ehss-docs/${id}/view`, {
+        headers: { Authorization: `Bearer ${getClientToken() ?? ""}` },
+      });
+      if (!res.ok) {
+        setError("Failed to open the document.");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+      // Bebaskan setelah tab sempat memuat.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch {
+      setError("Something went wrong opening the document.");
     }
   };
 
@@ -265,14 +291,12 @@ export function DocumentPanel({ role }: { role: UserRole }) {
                   </span>
                 )}
 
-                {/* Tombol View (semua peran) — buka file di tab baru */}
-                <a
-                  href={doc.file_url || "#"}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                {/* Tombol View (semua peran) — stream lewat backend */}
+                <button
+                  type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setSelectedId(doc.id);
+                    viewDoc(doc.id);
                   }}
                   aria-label={`View ${doc.title}`}
                   className={cn(
@@ -281,7 +305,7 @@ export function DocumentPanel({ role }: { role: UserRole }) {
                   )}
                 >
                   <Eye className="size-4" />
-                </a>
+                </button>
 
                 {/* Hapus — KHUSUS Admin */}
                 {isAdmin && (

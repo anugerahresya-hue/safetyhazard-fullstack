@@ -20,11 +20,12 @@ import {
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/layout/Logo";
 import { clearSession } from "@/lib/auth";
+import { useLang } from "@/contexts/LanguageContext";
 
 export type UserRole = "admin" | "inspector" | "manager";
 
 type NavItem = {
-  label: string;
+  labelKey: "dashboard" | "hazard_analyzer" | "reports" | "ehss_knowledge" | "admin";
   href: string;
   icon: LucideIcon;
   roles: UserRole[];
@@ -33,31 +34,31 @@ type NavItem = {
 /** Hak akses sidebar per peran (lihat PRD bag. 3B). */
 const NAV: NavItem[] = [
   {
-    label: "Dashboard",
+    labelKey: "dashboard",
     href: "/dashboard",
     icon: LayoutDashboard,
     roles: ["admin", "inspector", "manager"],
   },
   {
-    label: "Hazard Analyzer",
+    labelKey: "hazard_analyzer",
     href: "/analyzer",
     icon: ScanEye,
     roles: ["inspector"],
   },
   {
-    label: "Reports",
+    labelKey: "reports",
     href: "/reports",
     icon: FileText,
     roles: ["admin", "inspector", "manager"],
   },
   {
-    label: "EHSS Knowledge",
+    labelKey: "ehss_knowledge",
     href: "/ehss-knowledge",
     icon: BookOpen,
     roles: ["admin", "inspector", "manager"],
   },
   {
-    label: "Admin",
+    labelKey: "admin",
     href: "/users",
     icon: Users,
     roles: ["admin"],
@@ -67,6 +68,7 @@ const NAV: NavItem[] = [
 export function Sidebar({ role = "admin" }: { role?: UserRole }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { t } = useLang();
   const [collapsed, setCollapsed] = useState(false);
   const items = NAV.filter((item) => item.roles.includes(role));
 
@@ -101,10 +103,10 @@ export function Sidebar({ role = "admin" }: { role?: UserRole }) {
             pathname === item.href || pathname.startsWith(`${item.href}/`);
           const Icon = item.icon;
           return (
-            <Link
+              <Link
               key={item.href}
               href={item.href}
-              title={collapsed ? item.label : undefined}
+              title={collapsed ? t.nav[item.labelKey] : undefined}
               className={cn(
                 "group/navitem relative flex items-center gap-3 rounded-full px-3 py-2.5 text-sm font-medium transition-colors",
                 collapsed && "justify-center",
@@ -120,7 +122,7 @@ export function Sidebar({ role = "admin" }: { role?: UserRole }) {
                 )}
                 strokeWidth={active ? 2.25 : 1.75}
               />
-              {!collapsed && <span className="truncate">{item.label}</span>}
+              {!collapsed && <span className="truncate">{t.nav[item.labelKey]}</span>}
 
               {/* Tooltip saat mode ringkas */}
               {collapsed && (
@@ -128,7 +130,7 @@ export function Sidebar({ role = "admin" }: { role?: UserRole }) {
                   role="tooltip"
                   className="pointer-events-none absolute left-full top-1/2 z-50 ml-3 -translate-y-1/2 whitespace-nowrap rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition-opacity group-hover/navitem:opacity-100 dark:bg-slate-700"
                 >
-                  {item.label}
+                  {t.nav[item.labelKey]}
                 </span>
               )}
             </Link>
@@ -140,14 +142,14 @@ export function Sidebar({ role = "admin" }: { role?: UserRole }) {
       <div className="p-3 border-t border-border">
         <button
           onClick={handleLogout}
-          title={collapsed ? "Logout" : undefined}
+          title={collapsed ? t.nav.logout : undefined}
           className={cn(
             "group/navitem relative flex w-full items-center gap-3 rounded-full px-3 py-2.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-500 dark:hover:bg-red-950/50",
             collapsed && "justify-center"
           )}
         >
           <LogOut className="size-5 shrink-0" strokeWidth={1.75} />
-          {!collapsed && <span>Logout</span>}
+          {!collapsed && <span>{t.nav.logout}</span>}
 
           {/* Tooltip Logout saat mode ringkas */}
           {collapsed && (
@@ -155,7 +157,7 @@ export function Sidebar({ role = "admin" }: { role?: UserRole }) {
               role="tooltip"
               className="pointer-events-none absolute left-full top-1/2 z-50 ml-3 -translate-y-1/2 whitespace-nowrap rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition-opacity group-hover/navitem:opacity-100 dark:bg-slate-700"
             >
-              Logout
+              {t.nav.logout}
             </span>
           )}
         </button>
@@ -172,9 +174,9 @@ export function Sidebar({ role = "admin" }: { role?: UserRole }) {
         <button
           type="button"
           onClick={() => setCollapsed((v) => !v)}
-          title={collapsed ? "Expand" : "Collapse"}
+          title={collapsed ? t.nav.expand : t.nav.collapse}
           className="flex size-9 items-center justify-center rounded-lg text-muted transition-colors hover:bg-foreground/5 hover:text-foreground"
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-label={collapsed ? t.nav.expand : t.nav.collapse}
         >
           {collapsed ? (
             <PanelLeftOpen className="size-5" strokeWidth={1.75} />
@@ -189,6 +191,7 @@ export function Sidebar({ role = "admin" }: { role?: UserRole }) {
 
 function ThemeToggle({ collapsed }: { collapsed: boolean }) {
   const { theme, setTheme } = useTheme();
+  const { t } = useLang();
   const [mounted, setMounted] = useState(false);
 
   // Hindari mismatch hydrasi: render placeholder sampai ter-mount.
@@ -202,7 +205,7 @@ function ThemeToggle({ collapsed }: { collapsed: boolean }) {
     <button
       type="button"
       onClick={() => setTheme(isDark ? "light" : "dark")}
-      title={isDark ? "Light mode" : "Dark mode"}
+      title={isDark ? t.nav.light_mode : t.nav.dark_mode}
       className="flex size-9 items-center justify-center rounded-lg text-muted transition-colors hover:bg-foreground/5 hover:text-foreground"
       aria-label="Toggle theme"
     >

@@ -1,1 +1,1 @@
-# SafetyVision FastAPI Backend
+# Services — business logic layer

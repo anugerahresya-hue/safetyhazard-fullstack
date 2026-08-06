@@ -43,12 +43,12 @@ The AI pipeline orchestrates three external services to analyze workplace safety
 
 ### External Services
 
-**YOLO Service (Port 8001)**
+**YOLO Service ([Port 8000](https://computer-vision-safety-hazard-production.up.railway.app/docs))**
 - Owner: Johana's team
 - Endpoints: /detect, /ocr
 - Environment: YOLO_SERVICE_URL
 
-**RAG Service (Port 8002)**
+**RAG Service ([Port 8080](https://mattel-ehss-rag-production.up.railway.app/docs))**
 - Owner: Nisrina's team
 - Endpoint: /recommend
 - Environment: RAG_SERVICE_URL
@@ -103,8 +103,8 @@ ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=60
 
 # AI Services
-YOLO_SERVICE_URL=http://localhost:8001
-RAG_SERVICE_URL=http://localhost:8002
+YOLO_SERVICE_URL=https://computer-vision-safety-hazard-production.up.railway.app/docs
+RAG_SERVICE_URL=https://mattel-ehss-rag-production.up.railway.app/docs
 
 # Environment
 ENV=development
@@ -309,10 +309,10 @@ psql $DATABASE_URL -c "SELECT 1"
 ### AI Service Connection Issues
 ```bash
 # Test YOLO service
-curl http://localhost:8001/health
+curl https://computer-vision-safety-hazard-production.up.railway.app/health
 
 # Test RAG service
-curl http://localhost:8002/health
+curl https://mattel-ehss-rag-production.up.railway.app/health
 ```
 
 ### JWT Token Issues
