@@ -87,7 +87,8 @@ async def call_yolo_bytes(image_bytes: bytes, confidence: float = YOLO_CONFIDENC
                     },
                 )
                 response.raise_for_status()
-                return response.json().get("detections", [])
+                raw = response.json().get("detections", [])
+                return [normalise_detection(d) for d in raw]
         except httpx.HTTPStatusError as e:
             # 500 errors could be transient, retry
             if e.response.status_code >= 500 and attempt < max_retries - 1:
@@ -142,6 +143,35 @@ async def call_rag(hazards: list) -> list:
 
 
 ENV_HAZARD_LABELS = {"wet_floor", "blocked_walkway", "exposed_cable", "chemical_spill"}
+
+
+def normalise_detection(raw: dict) -> dict:
+    """
+    Convert YOLO v2.0.0 response to internal format.
+    
+    YOLO v2.0.0 returns bbox as dict: {"x1": 105.5, "y1": 200.0, "x2": 150.2, "y2": 320.8, "width": 44.7, "height": 120.8}
+    This function normalizes to array format [x1, y1, x2, y2] for internal processing.
+    """
+    bbox_raw = raw.get("bbox", {})
+    
+    # Handle both object format (v2.0.0) and array format (legacy)
+    if isinstance(bbox_raw, dict):
+        x1 = float(bbox_raw.get("x1", 0))
+        y1 = float(bbox_raw.get("y1", 0))
+        x2 = float(bbox_raw.get("x2", 0))
+        y2 = float(bbox_raw.get("y2", 0))
+        bbox = [x1, y1, x2, y2]
+    elif isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) >= 4:
+        bbox = [float(v) for v in bbox_raw[:4]]
+    else:
+        bbox = [0.0, 0.0, 0.0, 0.0]
+    
+    return {
+        "label": str(raw.get("label", "unknown")).lower(),
+        "confidence": float(raw.get("confidence_score") or raw.get("confidence") or 0.0),
+        "confidence_score": float(raw.get("confidence_score") or raw.get("confidence") or 0.0),
+        "bbox": bbox,  # always [x1, y1, x2, y2] after this
+    }
 
 
 async def run_full_pipeline(image_url: str, area: str = "spray_decoration") -> tuple:
