@@ -445,6 +445,8 @@ export function VideoAnalyzer({
             <video
               ref={videoRef}
               src={videoSrc}
+              muted
+              playsInline
               className="absolute inset-0 size-full object-contain"
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}
