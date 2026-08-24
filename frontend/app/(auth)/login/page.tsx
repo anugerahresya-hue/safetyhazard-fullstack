@@ -161,6 +161,23 @@ function LoginForm() {
               Sign In
             </button>
           </form>
+
+          {/* Demo Credentials */}
+          <div className="mt-6 rounded-lg border border-border bg-muted/30 p-4">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted">
+              Demo Accounts
+            </p>
+            <div className="space-y-3 text-xs">
+              <div>
+                <p className="font-medium text-foreground">👤 Manager</p>
+                <p className="text-muted">felia@gmail.com / syasya00928</p>
+              </div>
+              <div>
+                <p className="font-medium text-foreground">🔍 Inspector</p>
+                <p className="text-muted">resya.feliany@student.president.ac.id / resyainspector</p>
+              </div>
+            </div>
+          </div>
         </div>
 
         <p className="mt-6 text-center text-sm text-muted">
