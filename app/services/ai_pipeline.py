@@ -191,6 +191,8 @@ def get_analysis_dimensions(image_bytes: bytes) -> tuple:
     Kembalikan (width, height) gambar yang dikirim ke YOLO SETELAH resize.
     Koordinat bbox dari YOLO selalu dalam skala dimensi ini — frontend
     perlu tahu untuk menghitung scale factor ke ukuran canvas/video asli.
+    
+    Used by: inspections.py (live-preview, analyze-frame, finalize)
     """
     try:
         img = Image.open(BytesIO(image_bytes))
