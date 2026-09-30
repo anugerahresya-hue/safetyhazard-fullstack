@@ -1,8 +1,8 @@
-# AGENT.md - SafetyVision Backend Project
+# AGENT.md - SafetyHazard Backend Project
 
 ## PROJECT OVERVIEW
 
-**Project Name:** SafetyVision Backend
+**Project Name:** SafetyHazard Backend
 **Purpose:** AI-powered workplace hazard detection system for Mattel EHSS
 **Type:** FastAPI-based REST API Backend
 **Database:** PostgreSQL (hosted on Supabase)
@@ -348,7 +348,7 @@ When working with this codebase, focus on:
 
 ## SUMMARY
 
-SafetyVision is a production-ready FastAPI backend that integrates AI-powered hazard detection with enterpri
+SafetyHazard is a production-ready FastAPI backend that integrates AI-powered hazard detection with enterpri
 se safety workflows. The system follows clean architecture principles with clear separation between routes, services, models, and middleware. It implements role-based access control, external AI service orchestration, PDF report generation, and comprehensive database relationships.
 
 **Current Status:** Sprint 1 Complete (Core features operational)  

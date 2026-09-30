@@ -1,6 +1,6 @@
-# SafetyVision Backend — FastAPI
+# SafetyHazard Backend — FastAPI
 
-Mattel EHSS SafetyVision — AI-powered workplace hazard detection system.
+Mattel EHSS SafetyHazard — AI-powered workplace hazard detection system.
 Group 4, AI Class 1 — Resya A. F. (Fullstack)
 
 ---
