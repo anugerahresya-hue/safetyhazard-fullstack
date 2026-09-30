@@ -5,8 +5,20 @@ from PIL import Image
 from app.services.severity_rules import get_severity
 from app.services.area_rules import check_ppe_compliance, check_special_hazards
 
-YOLO_SERVICE_URL = os.getenv("YOLO_SERVICE_URL", "http://localhost:8000")
-RAG_SERVICE_URL  = os.getenv("RAG_SERVICE_URL",  "http://localhost:8080")
+def _ensure_protocol(url: str) -> str:
+    """Tambahkan https:// kalau env var URL tidak menyertakan protokol.
+
+    Railway env kadang di-set tanpa protokol (mis. 'compute-vision-...railway.app'),
+    yang membuat httpx melempar UnsupportedProtocol — padahal service jalan.
+    """
+    url = (url or "").strip()
+    if url and not url.startswith(("http://", "https://")):
+        return "https://" + url
+    return url
+
+
+YOLO_SERVICE_URL = _ensure_protocol(os.getenv("YOLO_SERVICE_URL", "https://compute-vision-safetyhazard-production.up.railway.app"))
+RAG_SERVICE_URL  = _ensure_protocol(os.getenv("RAG_SERVICE_URL",  "https://mattel-ehss-rag-production-12a3.up.railway.app"))
 
 
 # Confidence threshold default untuk YOLO. Diupdate ke 0.25 (API minimum).
@@ -55,23 +67,22 @@ def resize_image_if_needed(image_bytes: bytes, max_dimension: int = MAX_IMAGE_DI
 
 
 async def call_yolo_bytes(image_bytes: bytes, confidence: float = YOLO_CONFIDENCE) -> list:
-    """Deteksi dari bytes gambar langsung — untuk live camera (frame per frame).
+    """Deteksi dari bytes gambar langsung (tanpa download URL).
 
-    Selalu pakai /detect-sahi karena live camera kirim per-frame (bukan video utuh).
+    Selalu pakai /detect-sahi — endpoint SAHI memotong gambar jadi slice kecil
+    sehingga jauh lebih akurat mendeteksi objek kecil (helmet, vest, person
+    jauh) dibanding /detect standar. Dipakai baik oleh live-preview maupun
+    analisa penuh supaya keduanya konsisten & akurat.
+    
     Retry logic: 500 errors bisa sementara (YOLO service restart/overload).
     Image resizing: Downscale ke 1280px untuk mengurangi beban CPU YOLO service.
     """
-    # Kalau ternyata bytes-nya video (bukan frame), route ke detect-video
-    if _is_video_bytes(image_bytes):
-        print("[YOLO] call_yolo_bytes received video bytes — routing to /detect-video")
-        return await call_yolo_video_bytes(image_bytes, confidence)
-
     # Resize image untuk mengurangi beban YOLO service (running di CPU)
     image_bytes = resize_image_if_needed(image_bytes)
-
+    
     max_retries = 3
     retry_delay = 2  # seconds
-
+    
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -84,135 +95,38 @@ async def call_yolo_bytes(image_bytes: bytes, confidence: float = YOLO_CONFIDENC
                         "slice_size": YOLO_SLICE_SIZE,
                         "is_walking": True,
                         "lane_start": 0.2,
-                        "lane_end":   0.8,
+                        "lane_end": 0.8,
                     },
                 )
                 response.raise_for_status()
-                return response.json().get("detections", [])
+                raw = response.json().get("detections", [])
+                return [normalise_detection(d) for d in raw]
         except httpx.HTTPStatusError as e:
+            # 500 errors could be transient, retry
             if e.response.status_code >= 500 and attempt < max_retries - 1:
                 import asyncio
                 await asyncio.sleep(retry_delay)
                 continue
+            # 4xx errors or final retry, raise
             raise
-        except httpx.RequestError:
+        except httpx.RequestError as e:
+            # Network errors, retry
             if attempt < max_retries - 1:
                 import asyncio
                 await asyncio.sleep(retry_delay)
                 continue
             raise
-
+    
+    # Should not reach here, but return empty if all retries fail
     return []
 
 
-async def call_yolo_video_bytes(video_bytes: bytes, confidence: float = YOLO_CONFIDENCE) -> list:
-    """Kirim video bytes ke YOLO /detect-video endpoint.
-
-    Params sesuai Swagger YOLO v2.0.0:
-      video         : multipart field (MP4/AVI/MOV)
-      confidence    : 0.25 default
-      frame_interval: 30 (proses 1 frame per 30 frame)
-      use_sahi      : false (lebih cepat untuk video)
-      is_walking    : true
-      lane_start    : 0.2
-      lane_end      : 0.8
-      max_frames    : 50
-    """
-    print(f"[YOLO] Sending {len(video_bytes)} bytes to /detect-video")
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        files = {"video": ("video.mp4", video_bytes, "video/mp4")}
-        response = await client.post(
-            f"{YOLO_SERVICE_URL}/detect-video",
-            files=files,
-            params={
-                "confidence":     confidence,
-                "frame_interval": 30,
-                "use_sahi":       False,
-                "is_walking":     True,
-                "lane_start":     0.2,
-                "lane_end":       0.8,
-                "max_frames":     50,
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        # /detect-video returns per-frame detections — flatten to single list
-        # Response format: {"frames": [{"frame": N, "detections": [...]}, ...]}
-        # or {"detections": [...]} for aggregated results
-        if "detections" in data:
-            return data["detections"]
-        elif "frames" in data:
-            # Flatten all frame detections into one list, deduplicated by label+bbox
-            all_detections = []
-            seen = set()
-            for frame in data["frames"]:
-                for det in frame.get("detections", []):
-                    key = (det.get("label"), str(det.get("bbox", [])))
-                    if key not in seen:
-                        seen.add(key)
-                        all_detections.append(det)
-            return all_detections
-        return []
-
-
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".webm", ".mkv"}
-
-
-def _is_video_url(url: str) -> bool:
-    """Check if URL points to a video file by extension."""
-    from pathlib import PurePosixPath
-    path = PurePosixPath(url.split("?")[0])  # strip query params
-    return path.suffix.lower() in VIDEO_EXTENSIONS
-
-
-def _is_video_bytes(data: bytes) -> bool:
-    """Check if bytes are a video by magic bytes signature."""
-    if len(data) < 12:
-        return False
-    # MP4/MOV: ftyp box
-    if data[4:8] in (b"ftyp", b"moov", b"mdat"):
-        return True
-    # AVI: RIFF....AVI
-    if data[:4] == b"RIFF" and data[8:11] == b"AVI":
-        return True
-    # WebM/MKV: EBML header
-    if data[:4] == b"\x1a\x45\xdf\xa3":
-        return True
-    return False
-
-
 async def call_yolo(image_url: str, confidence: float = YOLO_CONFIDENCE) -> list:
-    """Download file dari URL lalu kirim ke YOLO endpoint yang sesuai.
-
-    - Video (mp4/mov/avi)  → /detect-video  (field: video)
-    - Gambar (jpg/png/etc) → /detect-sahi   (field: image)
-    """
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        file_res = await client.get(image_url)
-        file_res.raise_for_status()
-        file_bytes = file_res.content
-
-    content_type = file_res.headers.get("content-type", "")
-    print(f"[YOLO] Downloaded {len(file_bytes)} bytes, content-type: {content_type}, url: {image_url[-60:]}")
-
-    # Guard: kalau dapat HTML (error page dari Supabase), jangan kirim ke YOLO
-    if file_bytes[:15].lower().lstrip().startswith(b"<!doctype") or file_bytes[:6] == b"<html>":
-        print("[YOLO] Got HTML response from Supabase — bucket may be private or file not found")
-        return []
-
-    # Route to correct YOLO endpoint
-    is_video = (
-        _is_video_url(image_url) or
-        "video" in content_type or
-        _is_video_bytes(file_bytes)
-    )
-
-    if is_video:
-        print("[YOLO] Routing to /detect-video")
-        return await call_yolo_video_bytes(file_bytes, confidence)
-    else:
-        print("[YOLO] Routing to /detect-sahi")
-        return await call_yolo_bytes(file_bytes, confidence)
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        img_res = await client.get(image_url)
+        img_res.raise_for_status()
+        image_bytes = img_res.content
+    return await call_yolo_bytes(image_bytes, confidence)
 
 
 async def call_ocr(image_url: str) -> str:
@@ -243,14 +157,67 @@ async def call_rag(hazards: list) -> list:
 ENV_HAZARD_LABELS = {"wet_floor", "blocked_walkway", "exposed_cable", "chemical_spill"}
 
 
-async def run_full_pipeline(image_url: str, area: str = "spray_decoration") -> tuple:
+def normalise_detection(raw: dict) -> dict:
+    """
+    Convert YOLO v2.0.0 response to internal format.
+    
+    YOLO v2.0.0 returns bbox as dict: {"x1": 105.5, "y1": 200.0, "x2": 150.2, "y2": 320.8, "width": 44.7, "height": 120.8}
+    This function normalizes to array format [x1, y1, x2, y2] for internal processing.
+    """
+    bbox_raw = raw.get("bbox", {})
+    
+    # Handle both object format (v2.0.0) and array format (legacy)
+    if isinstance(bbox_raw, dict):
+        x1 = float(bbox_raw.get("x1", 0))
+        y1 = float(bbox_raw.get("y1", 0))
+        x2 = float(bbox_raw.get("x2", 0))
+        y2 = float(bbox_raw.get("y2", 0))
+        bbox = [x1, y1, x2, y2]
+    elif isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) >= 4:
+        bbox = [float(v) for v in bbox_raw[:4]]
+    else:
+        bbox = [0.0, 0.0, 0.0, 0.0]
+    
+    return {
+        "label": str(raw.get("label", "unknown")).lower(),
+        "confidence": float(raw.get("confidence_score") or raw.get("confidence") or 0.0),
+        "confidence_score": float(raw.get("confidence_score") or raw.get("confidence") or 0.0),
+        "bbox": bbox,  # always [x1, y1, x2, y2] after this
+    }
+
+
+def get_analysis_dimensions(image_bytes: bytes) -> tuple:
+    """
+    Kembalikan (width, height) gambar yang dikirim ke YOLO SETELAH resize.
+    Koordinat bbox dari YOLO selalu dalam skala dimensi ini — frontend
+    perlu tahu untuk menghitung scale factor ke ukuran canvas/video asli.
+    """
+    try:
+        img = Image.open(BytesIO(image_bytes))
+        w, h = img.width, img.height
+        ratio = min(MAX_IMAGE_DIMENSION / w, MAX_IMAGE_DIMENSION / h)
+        if ratio < 1:
+            return int(w * ratio), int(h * ratio)
+        return w, h
+    except Exception:
+        return 0, 0
+
+
+async def run_full_pipeline(image_url: str = "", area: str = "spray_decoration", image_bytes: bytes | None = None) -> tuple:
     """
     Return tuple: (raw_detections, enriched_hazards)
     - raw_detections: deteksi mentah dari YOLO (untuk summary stats)
     - enriched_hazards: hazard yang sudah diproses dengan RAG + severity
+
+    Kirim gambar via `image_bytes` (bytes langsung, seperti analyze-frame /
+    live-preview yang reliabel) ATAU `image_url` (download dulu). Bytes
+    langsung lebih aman karena tidak bergantung pada akses URL Supabase.
     """
     # 1. YOLO detection (pakai SAHI)
-    detections = await call_yolo(image_url)
+    if image_bytes is not None:
+        detections = await call_yolo_bytes(image_bytes)
+    else:
+        detections = await call_yolo(image_url)
 
     if not detections:
         return ([], [])  # Return empty tuple
@@ -258,6 +225,14 @@ async def run_full_pipeline(image_url: str, area: str = "spray_decoration") -> t
     detected_labels = {d.get("label", "").lower() for d in detections}
     person_detections = [d for d in detections if d.get("label", "").lower() == "person"]
     person_count = len(person_detections)
+
+    # Jika YOLO tidak mendeteksi "person" tapi ada item PPE (helmet, boots,
+    # glasses, gloves, apron) — item PPE hanya muncul di atas orang, jadi
+    # anggap ada minimal 1 pekerja. Tanpa ini, PPE violations tidak pernah
+    # di-generate dan risk selalu "safe" padahal ada pelanggaran.
+    PPE_ITEM_LABELS = {"safety_helmet", "safety_glasses", "safety_gloves", "safety_boots", "apron"}
+    if person_count == 0 and detected_labels.intersection(PPE_ITEM_LABELS):
+        person_count = 1
 
     # a) Hazard lingkungan — setiap deteksi LANGSUNG jadi hazard
     hazard_detections = [
@@ -268,8 +243,11 @@ async def run_full_pipeline(image_url: str, area: str = "spray_decoration") -> t
     # Dataset baru punya: person, trolley, phone, apron, safety_glasses, 
     # safety_gloves, safety_boots, safety_helmet (bukan "helmet"/"safety_vest" lagi)
     if person_count > 0:
-        # Gunakan area_rules untuk cek PPE compliance per area
-        missing_ppe = check_ppe_compliance(detected_labels, area, person_count)
+        # Gunakan area_rules untuk cek PPE compliance per area.
+        # Teruskan detections penuh supaya matching per-person (IoU)
+        # bisa berjalan — orang yang PPE-nya tidak lengkap tetap terdeteksi
+        # walau pekerja lain di frame sudah lengkap.
+        missing_ppe = check_ppe_compliance(detected_labels, area, person_count, detections)
         hazard_detections.extend(missing_ppe)
     
     # c) Special hazards (phone usage, trolley/person lane violations)

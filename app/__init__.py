@@ -1,1 +1,1 @@
-# SafetyHazard FastAPI Backend
+# SafetyVision FastAPI Backend

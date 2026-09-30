@@ -15,13 +15,17 @@ GMAIL_CLIENT_SECRET = os.getenv("GMAIL_CLIENT_SECRET")
 GMAIL_REFRESH_TOKEN = os.getenv("GMAIL_REFRESH_TOKEN")
 GMAIL_SENDER        = os.getenv("GMAIL_SENDER")  # alamat Gmail pengirim, misal: safetyvision.ehss@gmail.com
 
-MAIL_FROM = os.getenv("MAIL_FROM", f"SafetyHazard EHSS <{GMAIL_SENDER}>")
-APP_URL   = os.getenv("APP_URL", "https://safetyvision-backend-production.up.railway.app")
+MAIL_FROM = os.getenv("MAIL_FROM", f"SafetyVision EHSS <{GMAIL_SENDER}>")
+APP_URL   = os.getenv("APP_URL", "https://safetyhazard-backend-production.up.railway.app")
 
 reset_tokens: dict = {}
 
 
 def _get_gmail_service():
+    """Bangun Gmail API client dari refresh token. Access token di-refresh
+    otomatis oleh library google-auth setiap kali dipanggil (access token
+    Google cuma berlaku ~1 jam, tapi refresh token tidak pernah kedaluwarsa
+    selama tidak di-revoke manual)."""
     creds = Credentials(
         token=None,
         refresh_token=GMAIL_REFRESH_TOKEN,
@@ -78,12 +82,12 @@ body{{margin:0;padding:0;background:#F8F9FA;font-family:'Segoe UI',Arial,sans-se
 </style></head><body>
 <div class="wrapper">
   <div class="header">
-    <div class="header-title">🛡️ SSafetyHazard</div>
+    <div class="header-title">🛡️ SafetyVision</div>
     <div class="header-sub">Mattel EHSS · AI-powered Workplace Hazard Detection</div>
   </div>
   <div class="body">{content}</div>
   <div class="footer">
-    <div class="footer-text">© 2026 Mattel, Inc. · EHSS SafetyHazard<br>This is an automated message. Please do not reply.</div>
+    <div class="footer-text">© 2026 Mattel, Inc. · EHSS SafetyVision<br>This is an automated message. Please do not reply.</div>
   </div>
 </div></body></html>"""
 
@@ -91,35 +95,59 @@ def send_register_user(to_email: str, name: str, role: str) -> bool:
     role_label = {"inspector": "Safety Inspector", "manager": "EHSS Manager"}.get(role, role.title())
     content = f"""
     <div class="greeting">Hi {name},</div>
-    <div class="text">Thank you for requesting access to <strong>Mattel EHSS SafetyHazard</strong>. Your account is currently <strong>pending Administrator approval</strong>.</div>
+    <div class="text">Thank you for requesting access to <strong>Mattel EHSS SafetyVision</strong>. Your account is currently <strong>pending Administrator approval</strong>.</div>
     <div class="text"><strong>Email:</strong> {to_email}<br><strong>Role:</strong> <span class="badge badge-pending">{role_label.upper()}</span><br><strong>Status:</strong> <span class="badge badge-pending">PENDING APPROVAL</span></div>
     <hr class="divider">
     <div class="text">You will receive another email once your account has been reviewed. This typically takes less than 24 hours.</div>"""
-    return send_email(to_email, "SafetyHazard — Account Request Received", base_template(content))
+    return send_email(to_email, "SafetyVision — Account Request Received", base_template(content))
 
 def send_register_admin(admin_email: str, new_name: str, new_email: str, role: str) -> bool:
     role_label = {"inspector": "Safety Inspector", "manager": "EHSS Manager"}.get(role, role.title())
     content = f"""
     <div class="greeting">New Access Request</div>
-    <div class="text">A new user has requested access to <strong>SafetyHazard</strong> and is awaiting your approval.</div>
+    <div class="text">A new user has requested access to <strong>SafetyVision</strong> and is awaiting your approval.</div>
     <div class="text"><strong>Name:</strong> {new_name}<br><strong>Email:</strong> {new_email}<br><strong>Role:</strong> <span class="badge badge-pending">{role_label.upper()}</span></div>
     <hr class="divider">
     <a href="{APP_URL}/docs" class="btn">Open Admin Panel →</a>"""
-    return send_email(admin_email, f"SafetyHazard — New Access Request: {new_name}", base_template(content))
+    return send_email(admin_email, f"SafetyVision — New Access Request: {new_name}", base_template(content))
 
 def send_approved(to_email: str, name: str) -> bool:
     content = f"""
     <div class="greeting">Great news, {name}! 🎉</div>
     <div class="text">Your account has been <strong>approved</strong>. Status: <span class="badge badge-active">ACTIVE</span></div>
-    <a href="{APP_URL}" class="btn">Sign In to SafetyHazard →</a>"""
-    return send_email(to_email, "SafetyHazard — Account Approved ✅", base_template(content))
+    <a href="{APP_URL}" class="btn">Sign In to SafetyVision →</a>"""
+    return send_email(to_email, "SafetyVision — Account Approved ✅", base_template(content))
 
 def send_rejected(to_email: str, name: str) -> bool:
     content = f"""
     <div class="greeting">Hi {name},</div>
     <div class="text">Your access request has been <strong>declined</strong>. Status: <span class="badge badge-inactive">REJECTED</span></div>
     <div class="text">If you believe this is a mistake, please contact your EHSS Manager or Administrator.</div>"""
-    return send_email(to_email, "SafetyHazard — Access Request Update", base_template(content))
+    return send_email(to_email, "SafetyVision — Access Request Update", base_template(content))
+
+def send_account_created(to_email: str, name: str, role: str) -> bool:
+    """Dikirim saat Admin membuat akun langsung (status langsung 'active').
+    Beda dari send_approved: user ini tidak pernah register sendiri, jadi
+    perlu diberitahu bahwa akun sudah dibuatkan untuknya."""
+    role_label = {"inspector": "Safety Inspector", "manager": "EHSS Manager", "admin": "Administrator"}.get(role, role.title())
+    content = f"""
+    <div class="greeting">Welcome aboard, {name}! 🎉</div>
+    <div class="text">An account has been created for you on <strong>Mattel EHSS SafetyVision</strong> by an Administrator. Your account is <strong>active</strong> and ready to use.</div>
+    <div class="text"><strong>Email:</strong> {to_email}<br><strong>Role:</strong> <span class="badge badge-active">{role_label.upper()}</span><br><strong>Status:</strong> <span class="badge badge-active">ACTIVE</span></div>
+    <div class="text">Please contact your Administrator for your temporary password if you haven't received it yet.</div>
+    <a href="{APP_URL}" class="btn">Sign In to SafetyVision →</a>"""
+    return send_email(to_email, "SafetyVision — Your Account Is Ready ✅", base_template(content))
+
+def send_report_ready(to_email: str, inspector_name: str, location: str, risk_level: str, hazard_count: int, inspection_id: str) -> bool:
+    """Dikirim ke manager/admin saat sebuah report PDF selesai digenerate."""
+    risk_badge = {"critical": "badge-inactive", "high": "badge-inactive", "medium": "badge-pending", "low": "badge-active"}.get(risk_level, "badge-pending")
+    content = f"""
+    <div class="greeting">📄 New Inspection Report Available</div>
+    <div class="text">A safety inspection report has been generated and is ready for review.</div>
+    <div class="text"><strong>Inspector:</strong> {inspector_name}<br><strong>Location:</strong> {location}<br><strong>Highest Risk:</strong> <span class="badge {risk_badge}">{risk_level.upper()}</span><br><strong>Hazards:</strong> {hazard_count}<br><strong>Inspection ID:</strong> {inspection_id[:8]}...</div>
+    <hr class="divider">
+    <a href="{APP_URL}" class="btn">Open SafetyVision →</a>"""
+    return send_email(to_email, f"SafetyVision — New Report: {location}", base_template(content))
 
 def send_critical_hazard(to_email: str, inspector_name: str, location: str, hazard_labels: list[str], inspection_id: str) -> bool:
     hazard_list_html = "".join(f"<li>{h}</li>" for h in hazard_labels)
@@ -129,8 +157,8 @@ def send_critical_hazard(to_email: str, inspector_name: str, location: str, haza
     <div class="text"><strong>Inspector:</strong> {inspector_name}<br><strong>Location:</strong> {location}<br><strong>Inspection ID:</strong> {inspection_id[:8]}...</div>
     <div class="text"><strong>Hazards found:</strong><ul style="margin:8px 0;padding-left:20px;color:#6B7280;">{hazard_list_html}</ul></div>
     <hr class="divider">
-    <a href="{APP_URL}" class="btn">Review in SafetyHazard →</a>"""
-    return send_email(to_email, f"SafetyHazard — CRITICAL Hazard at {location}", base_template(content))
+    <a href="{APP_URL}" class="btn">Review in SafetyVision →</a>"""
+    return send_email(to_email, f"SafetyVision — CRITICAL Hazard at {location}", base_template(content))
 
 
 def generate_reset_token(email: str) -> str:
@@ -154,8 +182,8 @@ def send_reset_password(to_email: str, name: str) -> bool:
     reset_url = f"{APP_URL}/?token={token}"
     content = f"""
     <div class="greeting">Hi {name},</div>
-    <div class="text">We received a request to reset your password for <strong>SafetyHazard</strong>.</div>
+    <div class="text">We received a request to reset your password for <strong>SafetyVision</strong>.</div>
     <a href="{reset_url}" class="btn">Reset Password →</a>
     <hr class="divider">
     <div class="text" style="font-size:13px;color:#9CA3AF;">⏱️ This link expires in <strong>1 hour</strong>. If you didn't request this, you can safely ignore this email.</div>"""
-    return send_email(to_email, "SafetyHazard — Password Reset Request", base_template(content))
+    return send_email(to_email, "SafetyVision — Password Reset Request", base_template(content))

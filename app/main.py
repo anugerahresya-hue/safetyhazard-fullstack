@@ -2,13 +2,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from app.routes import auth, inspections, reports, dashboard, admin
+from app.routes import auth, inspections, reports, dashboard, admin, knowledge
 
 load_dotenv()
 
 app = FastAPI(
-    title="SafetyHazard API",
-    description="Mattel EHSS SafetyHazard — AI-powered workplace hazard detection",
+    title="SafetyVision API",
+    description="Mattel EHSS SafetyVision — AI-powered workplace hazard detection",
     version="1.0.0",
 )
 
@@ -27,10 +27,11 @@ app.include_router(inspections.router, prefix="/inspections", tags=["Inspections
 app.include_router(reports.router, prefix="/reports", tags=["Reports"])
 app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
 app.include_router(admin.router, prefix="/admin", tags=["Admin"])
+app.include_router(knowledge.router, prefix="/knowledge", tags=["Knowledge"])
 
 @app.get("/")
 def root():
-    return {"message": "SafetyHazard API is running", "version": "1.0.0"}
+    return {"message": "SafetyVision API is running", "version": "1.0.0"}
 
 @app.get("/health")
 def health():
