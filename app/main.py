@@ -9,7 +9,7 @@ load_dotenv()
 app = FastAPI(
     title="SafetyHazard API",
     description="Mattel EHSS SafetyHazard — AI-powered workplace hazard detection",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 # ── CORS ──────────────────────────────────────────────────
